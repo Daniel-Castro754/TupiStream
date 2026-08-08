@@ -84,8 +84,8 @@ jobs:
             ${{ inputs.prompt }}
 
             Work only inside the checked-out repository. Do not commit, push, merge,
-            create GitHub issues, or create pull requests. Do not modify
-            `.github/workflows/**` or `.ai/rules.yml`.
+            create GitHub issues, or create pull requests. Do not modify anything under
+            `.github/**` or `.ai/**`.
 
             Implement the smallest reliable change that satisfies the request.
             Add or update tests when behavior changes. You may run the already-installed
@@ -110,7 +110,7 @@ jobs:
             exit 0
           fi
 
-          if printf '%s\n' "$CHANGED_FILES" | grep -Eq '^(\.github/workflows/|\.ai/rules\.yml$)'; then
+          if printf '%s\n' "$CHANGED_FILES" | grep -Eq '^(\.github/|\.ai/)'; then
             echo 'ERRO: Codex alterou um caminho protegido.' >&2
             exit 1
           fi
