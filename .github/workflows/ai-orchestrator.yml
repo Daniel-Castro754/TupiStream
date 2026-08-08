@@ -15,6 +15,35 @@ on:
           - refactor
           - tests
           - docs
+      implementer:
+        description: Agente que vai alterar o codigo
+        required: true
+        default: codex
+        type: choice
+        options:
+          - codex
+          - gemini
+          - claude
+      reviewer_1:
+        description: Primeiro revisor
+        required: true
+        default: gemini
+        type: choice
+        options:
+          - gemini
+          - codex
+          - claude
+          - none
+      reviewer_2:
+        description: Segundo revisor
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - gemini
+          - codex
+          - claude
       prompt:
         description: Descreva exatamente o que os agentes devem fazer
         required: true
@@ -28,10 +57,10 @@ concurrency:
 
 jobs:
   implement:
-    name: Codex implementa
+    name: Implementar com ${{ inputs.implementer }}
     if: github.actor == 'Daniel-Castro754'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     permissions:
       contents: write
       pull-requests: write
@@ -42,6 +71,31 @@ jobs:
       pr_url: ${{ steps.pr.outputs.pr_url }}
 
     steps:
+      - name: Validar credencial do implementador
+        env:
+          SELECTED_PROVIDER: ${{ inputs.implementer }}
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SELECTED_PROVIDER" in
+            codex)
+              [ -n "$OPENAI_KEY" ] || { echo 'OPENAI_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            gemini)
+              [ -n "$GEMINI_KEY" ] || { echo 'GEMINI_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            claude)
+              [ -n "$ANTHROPIC_KEY" ] || { echo 'ANTHROPIC_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            *)
+              echo "Provider invalido: $SELECTED_PROVIDER" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Checkout
         uses: actions/checkout@v5
         with:
@@ -54,7 +108,7 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Instalar dependencias antes do sandbox
+      - name: Instalar dependencias antes dos agentes
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
@@ -68,16 +122,18 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Codex - implementar tarefa
-        id: codex
+      - name: Codex - implementar
+        id: implement_codex
+        if: inputs.implementer == 'codex'
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           permission-profile: ':workspace'
+          model: ${{ vars.AI_CODEX_MODEL }}
           prompt: |
             You are the implementation agent for ${{ github.repository }}.
 
-            First read `.ai/rules.yml` and `.ai/prompts/implement.md` and obey them.
+            Read `.ai/rules.yml` and `.ai/prompts/implement.md` first and obey them.
 
             TASK TYPE: ${{ inputs.task_type }}
             USER REQUEST:
@@ -88,11 +144,94 @@ jobs:
             `.github/**` or `.ai/**`.
 
             Implement the smallest reliable change that satisfies the request.
-            Add or update tests when behavior changes. You may run the already-installed
-            local test/build tools, but do not depend on network access.
+            Add or update tests when behavior changes. Dependencies are already installed.
+            Do not depend on network access.
 
-            Before finishing, inspect the diff and report what changed, tests run, and
-            any remaining risks or assumptions.
+            Before finishing, inspect the diff and summarize what changed, tests you ran,
+            and any remaining risks or assumptions.
+
+      - name: Gemini - implementar
+        id: implement_gemini
+        if: inputs.implementer == 'gemini'
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.AI_GEMINI_MODEL }}
+          settings: |-
+            {
+              "model": {
+                "maxSessionTurns": 20
+              },
+              "general": {
+                "defaultApprovalMode": "auto_edit"
+              },
+              "telemetry": {
+                "enabled": false
+              },
+              "tools": {
+                "core": [
+                  "read_file",
+                  "read_many_files",
+                  "list_directory",
+                  "glob",
+                  "grep_search",
+                  "write_file",
+                  "replace"
+                ]
+              }
+            }
+          prompt: |-
+            You are the implementation agent for ${{ github.repository }}.
+
+            Read `.ai/rules.yml` and `.ai/prompts/implement.md` first and obey them.
+
+            TASK TYPE: ${{ inputs.task_type }}
+            USER REQUEST:
+            ${{ inputs.prompt }}
+
+            Work only inside the checked-out repository. Do not commit, push, merge,
+            create GitHub issues, or create pull requests. Do not modify anything under
+            `.github/**` or `.ai/**`.
+
+            You may edit files only through the provided workspace file tools. Shell and
+            network tools are intentionally unavailable. Implement the smallest reliable
+            change that satisfies the request and add or update tests when behavior changes.
+
+            Before finishing, inspect your changes and summarize what changed and any
+            remaining risks or assumptions.
+
+      - name: Claude - implementar
+        id: implement_claude
+        if: inputs.implementer == 'claude'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the implementation agent for ${{ github.repository }}.
+
+            Read `.ai/rules.yml` and `.ai/prompts/implement.md` first and obey them.
+
+            TASK TYPE: ${{ inputs.task_type }}
+            USER REQUEST:
+            ${{ inputs.prompt }}
+
+            Work only inside the checked-out repository. Do not commit, push, merge,
+            create GitHub issues, or create pull requests. Do not modify anything under
+            `.github/**` or `.ai/**`.
+
+            Implement the smallest reliable change that satisfies the request and add or
+            update tests when behavior changes. Do not use network access or Git commands.
+          claude_args: ${{ vars.AI_CLAUDE_MODEL != '' && format('--max-turns 20 --model {0} --allowedTools Edit,Read,Write,Glob,Grep', vars.AI_CLAUDE_MODEL) || '--max-turns 20 --allowedTools Edit,Read,Write,Glob,Grep' }}
+          settings: |-
+            {
+              "permissions": {
+                "allow": ["Read", "Glob", "Grep", "Edit", "Write"],
+                "deny": ["Bash", "WebFetch", "WebSearch"]
+              }
+            }
 
       - name: Verificar escopo e caminhos protegidos
         id: changes
@@ -106,12 +245,12 @@ jobs:
 
           if [ -z "$CHANGED_FILES" ]; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "Codex nao produziu alteracoes de arquivos." >> "$GITHUB_STEP_SUMMARY"
+            echo "O implementador nao produziu alteracoes de arquivos." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           if printf '%s\n' "$CHANGED_FILES" | grep -Eq '^(\.github/|\.ai/)'; then
-            echo 'ERRO: Codex alterou um caminho protegido.' >&2
+            echo 'ERRO: o agente alterou um caminho protegido (.github ou .ai).' >&2
             exit 1
           fi
 
@@ -146,13 +285,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH_NAME: ${{ steps.branch.outputs.branch_name }}
+          IMPLEMENTER: ${{ inputs.implementer }}
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m "ai: ${{ inputs.task_type }} via Codex"
+          git commit -m "ai: ${{ inputs.task_type }} via ${IMPLEMENTER}"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --set-upstream origin "$BRANCH_NAME"
 
@@ -163,7 +303,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BRANCH_NAME: ${{ steps.branch.outputs.branch_name }}
           USER_PROMPT: ${{ inputs.prompt }}
-          CODEX_SUMMARY: ${{ steps.codex.outputs.final-message }}
+          IMPLEMENTER: ${{ inputs.implementer }}
+          REVIEWER_1: ${{ inputs.reviewer_1 }}
+          REVIEWER_2: ${{ inputs.reviewer_2 }}
+          CODEX_SUMMARY: ${{ steps.implement_codex.outputs.final-message }}
+          GEMINI_SUMMARY: ${{ steps.implement_gemini.outputs.summary }}
           COMPILE_RESULT: ${{ steps.compile.outcome }}
           RUFF_RESULT: ${{ steps.ruff.outcome }}
           PYTEST_RESULT: ${{ steps.pytest.outcome }}
@@ -172,17 +316,28 @@ jobs:
         run: |
           set -euo pipefail
 
+          IMPLEMENTATION_SUMMARY="$CODEX_SUMMARY"
+          if [ -z "$IMPLEMENTATION_SUMMARY" ]; then
+            IMPLEMENTATION_SUMMARY="$GEMINI_SUMMARY"
+          fi
+          if [ -z "$IMPLEMENTATION_SUMMARY" ]; then
+            IMPLEMENTATION_SUMMARY="${IMPLEMENTER} completed the implementation step. Review the diff for details."
+          fi
+
           {
             echo '## AI Orchestrator run'
             echo
             echo "**Task type:** \`${{ inputs.task_type }}\`"
+            echo "**Implementer:** \`${IMPLEMENTER}\`"
+            echo "**Reviewer 1:** \`${REVIEWER_1}\`"
+            echo "**Reviewer 2:** \`${REVIEWER_2}\`"
             echo "**Triggered by:** \`${GITHUB_ACTOR}\`"
             echo
             echo '### Prompt'
             printf '%s\n' "$USER_PROMPT"
             echo
-            echo '### Codex summary'
-            printf '%s\n' "${CODEX_SUMMARY:-No final summary returned.}"
+            echo '### Implementation summary'
+            printf '%s\n' "$IMPLEMENTATION_SUMMARY"
             echo
             echo '### Local validation'
             echo "- compileall: ${COMPILE_RESULT}"
@@ -190,14 +345,14 @@ jobs:
             echo "- Pytest: ${PYTEST_RESULT}"
             echo "- Docker build: ${DOCKER_RESULT}"
             echo
-            echo '> This PR is intentionally a draft. Claude and Gemini review it, but only a human may merge it.'
+            echo '> This PR is intentionally a draft. AI reviewers cannot merge it; final approval stays human.'
           } > /tmp/ai-pr-body.md
 
           PR_URL="$(gh pr create \
             --draft \
             --base main \
             --head "$BRANCH_NAME" \
-            --title "AI: ${{ inputs.task_type }} (run ${GITHUB_RUN_ID})" \
+            --title "AI: ${{ inputs.task_type }} via ${IMPLEMENTER} (run ${GITHUB_RUN_ID})" \
             --body-file /tmp/ai-pr-body.md)"
 
           PR_NUMBER="$(gh pr view "$PR_URL" --json number --jq '.number')"
@@ -206,129 +361,204 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Draft PR: $PR_URL" >> "$GITHUB_STEP_SUMMARY"
 
-  claude_review:
-    name: Claude revisa
+  review:
+    name: Review ${{ matrix.slot }}
     needs: implement
     if: needs.implement.outputs.pr_number != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        slot:
+          - reviewer_1
+          - reviewer_2
     permissions:
       contents: read
       issues: write
       pull-requests: write
+    env:
+      SELECTED_REVIEWER: ${{ matrix.slot == 'reviewer_1' && inputs.reviewer_1 || inputs.reviewer_2 }}
+      PR_NUMBER: ${{ needs.implement.outputs.pr_number }}
+      BRANCH_NAME: ${{ needs.implement.outputs.branch_name }}
 
     steps:
+      - name: Registrar slot sem revisor
+        if: env.SELECTED_REVIEWER == 'none'
+        run: echo "${{ matrix.slot }} desativado." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validar credencial do revisor
+        if: env.SELECTED_REVIEWER != 'none'
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SELECTED_REVIEWER" in
+            codex)
+              [ -n "$OPENAI_KEY" ] || { echo 'OPENAI_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            gemini)
+              [ -n "$GEMINI_KEY" ] || { echo 'GEMINI_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            claude)
+              [ -n "$ANTHROPIC_KEY" ] || { echo 'ANTHROPIC_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+          esac
+
       - name: Checkout branch AI
+        if: env.SELECTED_REVIEWER != 'none'
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.implement.outputs.branch_name }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Claude - code review read-only
-        uses: anthropics/claude-code-action@v1
+      - name: Preparar contexto de review
+        if: env.SELECTED_REVIEWER != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '# Pull request metadata'
+            gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json number,title,body,baseRefName,headRefName,files
+            echo
+            echo '# Pull request diff'
+            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+          } > AI_REVIEW_CONTEXT.md
+
+      - name: Codex - review read-only
+        id: review_codex
+        if: env.SELECTED_REVIEWER == 'codex'
+        uses: openai/codex-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':read-only'
+          model: ${{ vars.AI_CODEX_MODEL }}
           prompt: |
-            Read `.ai/rules.yml` and `.ai/prompts/review.md`.
+            Read `.ai/prompts/review.md` and `AI_REVIEW_CONTEXT.md`.
 
-            Review draft PR #${{ needs.implement.outputs.pr_number }} in ${{ github.repository }}.
-            This is READ-ONLY. Do not edit files, commit, push, merge, change branches,
-            or change PR state.
+            Review only the change described by the PR context. Do not modify files,
+            commit, push, merge, or use network access. Focus on correctness,
+            regressions, security/privacy, compatibility, missing tests, edge cases,
+            performance regressions, and unnecessary complexity.
 
-            Use `gh pr view` and `gh pr diff` to understand the PR. Focus on correctness,
-            regressions, security/privacy, unrequested API changes, missing tests, edge
-            cases, and unnecessary complexity.
+            Classify meaningful findings as critical/high/medium/low. If there are no
+            meaningful findings, say so explicitly. Return only the review text.
 
-            Post exactly one top-level PR comment using `gh pr comment`. Start it with
-            `## Claude review`. Classify findings as critical/high/medium/low. If there
-            are no meaningful findings, say that explicitly. Keep the PR as draft.
-          claude_args: '--max-turns 10'
-          settings: |
-            {
-              "permissions": {
-                "allow": [
-                  "Read",
-                  "Glob",
-                  "Grep",
-                  "Bash(gh pr view:*)",
-                  "Bash(gh pr diff:*)",
-                  "Bash(gh pr comment:*)"
-                ],
-                "deny": [
-                  "Write",
-                  "Edit",
-                  "Bash(git:*)"
-                ]
-              }
-            }
+      - name: Publicar review do Codex
+        if: env.SELECTED_REVIEWER == 'codex'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_TEXT: ${{ steps.review_codex.outputs.final-message }}
+          SLOT: ${{ matrix.slot }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Codex review (${SLOT})"
+            echo
+            printf '%s\n' "$REVIEW_TEXT"
+          } > /tmp/review-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/review-comment.md
 
-  gemini_review:
-    name: Gemini revisa
-    needs: implement
-    if: needs.implement.outputs.pr_number != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-
-    steps:
-      - name: Checkout branch AI
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.implement.outputs.branch_name }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Gemini - bugs, edge cases e testes
+      - name: Gemini - review read-only
+        id: review_gemini
+        if: env.SELECTED_REVIEWER == 'gemini'
         uses: google-github-actions/run-gemini-cli@v0
         env:
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
           GITHUB_TOKEN: ${{ github.token }}
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ needs.implement.outputs.pr_number }}
-          REPOSITORY: ${{ github.repository }}
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.AI_GEMINI_MODEL }}
           settings: |-
             {
-              "maxSessionTurns": 12,
+              "model": {
+                "maxSessionTurns": 12
+              },
               "telemetry": {
                 "enabled": false
               },
-              "coreTools": [
-                "run_shell_command(gh pr view)",
-                "run_shell_command(gh pr diff)",
-                "run_shell_command(gh pr comment)",
-                "run_shell_command(cat)",
-                "run_shell_command(grep)",
-                "run_shell_command(head)",
-                "run_shell_command(tail)"
-              ]
+              "tools": {
+                "core": [
+                  "read_file",
+                  "read_many_files",
+                  "list_directory",
+                  "glob",
+                  "grep_search"
+                ]
+              }
             }
           prompt: |-
-            Read `.ai/rules.yml` and `.ai/prompts/review.md`.
+            Read `.ai/prompts/review.md` and `AI_REVIEW_CONTEXT.md`.
 
-            Review draft PR ${PR_NUMBER} in ${REPOSITORY}. This is READ-ONLY. Do not
-            modify files, commit, push, merge, change branches, or change PR state.
+            Review only the change described by the PR context. This is strictly
+            READ-ONLY. Do not modify files, commit, push, merge, or use shell/network
+            tools. Focus on bugs, edge cases, regressions, test gaps, security/privacy,
+            compatibility, and performance.
 
-            Inspect the PR with `gh pr view "${PR_NUMBER}"` and
-            `gh pr diff "${PR_NUMBER}"`. Focus especially on bugs, edge cases,
-            regression risks, test gaps, security/privacy issues, and performance.
+            Classify meaningful findings as critical/high/medium/low. If there are no
+            meaningful findings, say so explicitly. Return only the review text.
 
-            Post exactly one top-level PR comment using `gh pr comment`. Start it with
-            `## Gemini review`. Classify findings as critical/high/medium/low. If no
-            meaningful issues are found, say so explicitly. Keep the PR as draft.
+      - name: Publicar review do Gemini
+        if: env.SELECTED_REVIEWER == 'gemini'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_TEXT: ${{ steps.review_gemini.outputs.summary }}
+          SLOT: ${{ matrix.slot }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Gemini review (${SLOT})"
+            echo
+            printf '%s\n' "$REVIEW_TEXT"
+          } > /tmp/review-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/review-comment.md
+
+      - name: Claude - review read-only
+        if: env.SELECTED_REVIEWER == 'claude'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLOT: ${{ matrix.slot }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Read `.ai/prompts/review.md` and `AI_REVIEW_CONTEXT.md`.
+
+            Review only the change described by the PR context. This is READ-ONLY.
+            Do not edit files, commit, push, merge, change branches, or change PR state.
+
+            Focus on correctness, regressions, security/privacy, compatibility, missing
+            tests, edge cases, performance, and unnecessary complexity. Classify findings
+            as critical/high/medium/low. If no meaningful issues are found, say so.
+
+            Post exactly one top-level comment to PR #${{ needs.implement.outputs.pr_number }}
+            using `gh pr comment`. Begin with `## Claude review (${{ matrix.slot }})`.
+          claude_args: ${{ vars.AI_CLAUDE_MODEL != '' && format('--max-turns 10 --model {0}', vars.AI_CLAUDE_MODEL) || '--max-turns 10' }}
+          settings: |-
+            {
+              "permissions": {
+                "allow": ["Read", "Glob", "Grep", "Bash(gh pr comment:*)"],
+                "deny": ["Write", "Edit", "WebFetch", "WebSearch", "Bash(git:*)"]
+              }
+            }
+
+      - name: Remover contexto temporario
+        if: always() && env.SELECTED_REVIEWER != 'none'
+        run: rm -f AI_REVIEW_CONTEXT.md
 
   review_gate:
     name: Human review gate
     needs:
       - implement
-      - claude_review
-      - gemini_review
+      - review
     if: always() && needs.implement.outputs.pr_number != ''
     runs-on: ubuntu-latest
     permissions:
@@ -340,15 +570,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.implement.outputs.pr_number }}
-          CLAUDE_RESULT: ${{ needs.claude_review.result }}
-          GEMINI_RESULT: ${{ needs.gemini_review.result }}
+          IMPLEMENTER: ${{ inputs.implementer }}
+          REVIEWER_1: ${{ inputs.reviewer_1 }}
+          REVIEWER_2: ${{ inputs.reviewer_2 }}
+          REVIEW_RESULT: ${{ needs.review.result }}
         shell: bash
         run: |
           set -euo pipefail
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "## AI orchestration status
 
-          - Codex implementation: completed and pushed to an isolated branch
-          - Claude review job: **${CLAUDE_RESULT}**
-          - Gemini review job: **${GEMINI_RESULT}**
+          - Implementer: **${IMPLEMENTER}**
+          - Reviewer 1: **${REVIEWER_1}**
+          - Reviewer 2: **${REVIEWER_2}**
+          - Review jobs: **${REVIEW_RESULT}**
 
           The pull request remains a **draft**. No AI agent is authorized to merge to \`main\`."
