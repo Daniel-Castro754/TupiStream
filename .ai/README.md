@@ -1,56 +1,94 @@
 # AI Orchestrator
 
-This repository uses a manual GitHub Actions workflow to coordinate three AI agents with separate roles:
+The orchestrator is intentionally provider-neutral. At each manual run you choose which available AI occupies each role.
 
-1. **Codex** implements the requested change in an isolated `ai/run-*` branch.
-2. The repository validation commands run (`compileall`, Ruff, Pytest, Docker build).
-3. A **draft pull request** is created.
-4. **Claude** performs a read-only review and comments on the PR.
-5. **Gemini** performs a second read-only review focused on bugs, edge cases, and tests.
-6. A human reviews and merges the PR. AI agents never merge to `main`.
+## Roles
 
-## Required repository secrets
+The workflow exposes three runtime roles:
 
-Add these in **Settings → Secrets and variables → Actions → New repository secret**:
+- **Implementer**: edits the repository in an isolated `ai/run-*` branch.
+- **Reviewer 1**: performs a read-only review of the draft PR.
+- **Reviewer 2**: optional second read-only review.
 
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `GEMINI_API_KEY`
+Supported providers:
+
+- `codex`
+- `gemini`
+- `claude`
+- `none` for reviewer slots only
+
+The same provider may be used more than once, but independent providers are usually more useful for review.
+
+## Current recommended setup
+
+With only OpenAI and Gemini credentials configured:
+
+- Implementer: `codex`
+- Reviewer 1: `gemini`
+- Reviewer 2: `none`
+
+If OpenAI quota or pricing becomes undesirable, you can switch the implementer to `gemini` for a run. If an Anthropic credential is added later, `claude` becomes available in any role without redesigning the workflow.
+
+## Repository secrets
+
+Add only the providers you actually use in **Settings → Secrets and variables → Actions**:
+
+- Codex: `OPENAI_API_KEY`
+- Gemini: `GEMINI_API_KEY`
+- Claude: `ANTHROPIC_API_KEY`
+
+A missing secret does not break providers that were not selected. If a role selects a provider whose credential is missing, that role fails early with a clear error.
 
 Never commit API keys to the repository.
 
-## GitHub settings recommended before use
+## Optional model variables
 
-Protect `main` with a branch protection/ruleset that requires pull requests and CI checks. Keep auto-merge disabled during the pilot.
+The provider can also be kept while changing the exact model independently of the workflow file. Under **Settings → Secrets and variables → Actions → Variables**, you may define:
+
+- `AI_CODEX_MODEL`
+- `AI_GEMINI_MODEL`
+- `AI_CLAUDE_MODEL`
+
+Leave a variable absent/empty to use that provider action's default model. This makes it possible to switch to a cheaper/faster model later without editing the workflow.
 
 ## Running the orchestrator
 
-Open **Actions → AI Orchestrator → Run workflow**.
+Open **Actions → AI Orchestrator → Run workflow** and choose:
 
-Choose a task type:
+1. task type;
+2. implementer;
+3. reviewer 1;
+4. reviewer 2;
+5. prompt.
 
-- `feature`
-- `fix`
-- `optimize`
-- `refactor`
-- `tests`
-- `docs`
+Example low-risk pilot:
 
-Then enter the task in the `prompt` field.
+- Task type: `tests`
+- Implementer: `codex`
+- Reviewer 1: `gemini`
+- Reviewer 2: `none`
+- Prompt: `Analyze the current tests and add one useful regression test without changing production code.`
 
-Example:
+## Execution flow
 
-> Improve cache handling without changing the public API. Add regression tests for the changed behavior.
+1. Validate only the credential required by the selected implementer.
+2. Create an isolated `ai/run-*` branch.
+3. Run the selected implementer.
+4. Reject any AI modification under `.github/**` or `.ai/**`.
+5. Run `compileall`, Ruff, Pytest, and Docker build.
+6. Commit the implementation using the GitHub Actions bot and push the isolated branch.
+7. Open a **draft pull request**.
+8. Run each selected reviewer in read-only mode.
+9. Keep the PR as draft for human review and merge.
 
 ## Safety model
 
-The workflow is intentionally restricted:
-
-- only `Daniel-Castro754` may start the manual run;
-- Codex cannot push directly to `main`;
-- the workflow rejects Codex changes to `.github/workflows/**` and `.ai/rules.yml`;
-- Claude and Gemini are configured as read-only reviewers;
-- validation failures do not authorize a merge; the PR remains draft;
+- only `Daniel-Castro754` may start the manual implementation workflow;
+- no AI provider is allowed to merge to `main`;
+- agents cannot change the orchestration policy or workflow during implementation;
+- reviewers are read-only;
+- provider credentials are supplied only to the step that needs them;
+- validation failures never authorize a merge;
 - final merge is always a human action.
 
 See `.ai/rules.yml` for the machine-readable policy.
