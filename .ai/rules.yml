@@ -1,0 +1,53 @@
+version: 1
+
+orchestrator:
+  trigger: workflow_dispatch
+  allowed_actors:
+    - Daniel-Castro754
+  human_approval_required: true
+  auto_merge: false
+
+branches:
+  protected:
+    - main
+  ai_prefix: ai/run-
+  direct_push_to_protected: false
+
+implementation:
+  agent: codex
+  commit_or_push_by_agent: false
+  requirements:
+    - Keep changes minimal and scoped to the user prompt.
+    - Do not expose, print, copy, or persist secrets.
+    - Do not change public APIs unless the prompt explicitly authorizes it.
+    - Do not weaken authentication, authorization, validation, or security controls.
+    - Preserve backwards compatibility unless explicitly told otherwise.
+    - Add or update tests when behavior changes.
+  forbidden_paths:
+    - .github/workflows/**
+    - .ai/rules.yml
+
+validation:
+  commands:
+    - python -m compileall -q app
+    - ruff check app tests --select E9,F63,F7,F82
+    - python -m pytest -q
+    - docker build -t br-stremio-addon .
+  failure_policy: keep_pr_draft
+
+review:
+  agents:
+    - claude
+    - gemini
+  mode: read_only
+  expectations:
+    - Look for correctness bugs and regressions.
+    - Look for security and privacy issues.
+    - Look for missing tests and edge cases.
+    - Flag unnecessary complexity or scope creep.
+    - Never merge the pull request.
+
+merge:
+  actor: human_only
+  required_branch: main
+  require_ci: true
