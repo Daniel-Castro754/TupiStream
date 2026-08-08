@@ -25,7 +25,7 @@ implementation:
     - Add or update tests when behavior changes.
   forbidden_paths:
     - .github/workflows/**
-    - .ai/rules.yml
+    - .ai/**
 
 validation:
   commands:
