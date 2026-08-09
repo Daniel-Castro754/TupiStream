@@ -1,4 +1,4 @@
-version: 2
+version: 3
 
 orchestrator:
   trigger: workflow_dispatch
@@ -10,14 +10,17 @@ orchestrator:
 providers:
   supported:
     - codex
+    - deepseek
     - gemini
     - claude
   credentials:
     codex: OPENAI_API_KEY
+    deepseek: DEEPSEEK_API_KEY
     gemini: GEMINI_API_KEY
     claude: ANTHROPIC_API_KEY
   optional_model_variables:
     codex: AI_CODEX_MODEL
+    deepseek: AI_DEEPSEEK_MODEL
     gemini: AI_GEMINI_MODEL
     claude: AI_CLAUDE_MODEL
   missing_credential_policy: fail_selected_role_only
@@ -28,7 +31,7 @@ roles:
     default: codex
   reviewer_1:
     selectable: true
-    default: gemini
+    default: codex
     allow_none: true
   reviewer_2:
     selectable: true
@@ -66,6 +69,7 @@ review:
   mode: read_only
   selectable_providers:
     - codex
+    - deepseek
     - gemini
     - claude
     - none

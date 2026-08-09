@@ -1,0 +1,426 @@
+name: AI DeepSeek Task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_type:
+        description: Tipo da tarefa
+        required: true
+        default: optimize
+        type: choice
+        options:
+          - feature
+          - fix
+          - optimize
+          - refactor
+          - tests
+          - docs
+      reviewer:
+        description: Revisor da PR criada pelo DeepSeek
+        required: true
+        default: codex
+        type: choice
+        options:
+          - codex
+          - deepseek
+          - none
+      prompt:
+        description: Descreva exatamente o que o DeepSeek deve fazer
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ai-deepseek-${{ github.repository }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    name: DeepSeek implementa
+    if: github.actor == 'Daniel-Castro754'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    outputs:
+      branch_name: ${{ steps.branch.outputs.branch_name }}
+      reused_branch: ${{ steps.branch.outputs.reused_branch }}
+      has_changes: ${{ steps.changes.outputs.has_changes }}
+      compile_result: ${{ steps.compile.outcome }}
+      ruff_result: ${{ steps.ruff.outcome }}
+      pytest_result: ${{ steps.pytest.outcome }}
+      docker_result: ${{ steps.docker.outcome }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Preparar branch idempotente
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="ai/deepseek-${GITHUB_RUN_ID}"
+
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH_NAME:$BRANCH_NAME"
+            git checkout "$BRANCH_NAME"
+            echo "reused_branch=true" >> "$GITHUB_OUTPUT"
+            echo "Branch existente reutilizada; DeepSeek nao sera chamado novamente." >> "$GITHUB_STEP_SUMMARY"
+          else
+            git checkout -b "$BRANCH_NAME"
+            echo "reused_branch=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Validar chave DeepSeek
+        if: steps.branch.outputs.reused_branch != 'true'
+        env:
+          DEEPSEEK_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$DEEPSEEK_KEY" ] || {
+            echo 'DEEPSEEK_API_KEY nao configurada em Settings > Secrets and variables > Actions.' >&2
+            exit 1
+          }
+
+      - name: Python 3.11
+        if: steps.branch.outputs.reused_branch != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Instalar dependencias do projeto
+        if: steps.branch.outputs.reused_branch != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Preparar prompt do DeepSeek
+        if: steps.branch.outputs.reused_branch != 'true'
+        env:
+          USER_PROMPT: ${{ inputs.prompt }}
+          TASK_TYPE: ${{ inputs.task_type }}
+        shell: bash
+        run: |
+          {
+            echo "Read .ai/rules.yml and .ai/prompts/implement.md first and obey them."
+            echo
+            echo "TASK TYPE: ${TASK_TYPE}"
+            echo "USER REQUEST:"
+            printf '%s\n' "$USER_PROMPT"
+            echo
+            echo "Do not modify .github/** or .ai/**."
+            echo "Implement the smallest reliable change that satisfies the request."
+            echo "Add or update tests when behavior changes."
+          } > /tmp/deepseek-task.md
+
+      - name: DeepSeek - implementar com ferramentas sandboxed
+        id: deepseek
+        if: steps.branch.outputs.reused_branch != 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          AI_DEEPSEEK_MODEL: ${{ vars.AI_DEEPSEEK_MODEL }}
+        run: |
+          python .ai/deepseek_agent.py \
+            --mode implement \
+            --prompt-file /tmp/deepseek-task.md \
+            --output-file /tmp/deepseek-summary.md \
+            --max-turns 18
+
+      - name: Verificar escopo e caminhos protegidos
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.branch.outputs.reused_branch }}" = "true" ]; then
+            CHANGED_FILES="$(git diff --name-only origin/main...HEAD | sort -u)"
+          else
+            CHANGED_FILES="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          fi
+
+          echo "Arquivos alterados:"
+          printf '%s\n' "$CHANGED_FILES"
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "DeepSeek nao produziu alteracoes." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if printf '%s\n' "$CHANGED_FILES" | grep -Eq '^(\.github/|\.ai/)'; then
+            echo 'ERRO: o agente alterou um caminho protegido (.github ou .ai).' >&2
+            exit 1
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validar sintaxe
+        id: compile
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
+        continue-on-error: true
+        run: python -m compileall -q app
+
+      - name: Ruff - erros criticos
+        id: ruff
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
+        continue-on-error: true
+        run: ruff check app tests --select E9,F63,F7,F82
+
+      - name: Pytest
+        id: pytest
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
+        continue-on-error: true
+        run: python -m pytest -q
+
+      - name: Docker build
+        id: docker
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
+        continue-on-error: true
+        run: docker build -t br-stremio-addon .
+
+      - name: Commit e push
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ steps.branch.outputs.branch_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "ai: ${{ inputs.task_type }} via DeepSeek"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --set-upstream origin "$BRANCH_NAME"
+
+  publish:
+    name: Criar ou reutilizar draft PR
+    needs: implement
+    if: needs.implement.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      pr_url: ${{ steps.pr.outputs.pr_url }}
+
+    steps:
+      - name: Publicar PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ needs.implement.outputs.branch_name }}
+          REUSED_BRANCH: ${{ needs.implement.outputs.reused_branch }}
+          USER_PROMPT: ${{ inputs.prompt }}
+          REVIEWER: ${{ inputs.reviewer }}
+          COMPILE_RESULT: ${{ needs.implement.outputs.compile_result }}
+          RUFF_RESULT: ${{ needs.implement.outputs.ruff_result }}
+          PYTEST_RESULT: ${{ needs.implement.outputs.pytest_result }}
+          DOCKER_RESULT: ${{ needs.implement.outputs.docker_result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PR_NUMBER="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH_NAME" --base main --state open --json number --jq '.[0].number // empty')"
+
+          if [ -n "$PR_NUMBER" ]; then
+            PR_URL="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')"
+          else
+            {
+              echo '## AI DeepSeek run'
+              echo
+              echo "**Task type:** \`${{ inputs.task_type }}\`"
+              echo "**Implementer:** \`deepseek\`"
+              echo "**Reviewer:** \`${REVIEWER}\`"
+              echo "**Triggered by:** \`${GITHUB_ACTOR}\`"
+              echo
+              echo '### Prompt'
+              printf '%s\n' "$USER_PROMPT"
+              echo
+              echo '### Validation'
+              if [ "$REUSED_BRANCH" = "true" ]; then
+                echo '- Existing implementation branch reused; DeepSeek was not called again.'
+              else
+                echo "- compileall: ${COMPILE_RESULT}"
+                echo "- Ruff critical checks: ${RUFF_RESULT}"
+                echo "- Pytest: ${PYTEST_RESULT}"
+                echo "- Docker build: ${DOCKER_RESULT}"
+              fi
+              echo
+              echo '> Draft PR: final merge remains a human decision.'
+            } > /tmp/deepseek-pr-body.md
+
+            PR_URL="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --base main \
+              --head "$BRANCH_NAME" \
+              --title "AI: ${{ inputs.task_type }} via DeepSeek (run ${GITHUB_RUN_ID})" \
+              --body-file /tmp/deepseek-pr-body.md)"
+            PR_NUMBER="$(gh pr view "$PR_URL" --repo "$GITHUB_REPOSITORY" --json number --jq '.number')"
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "Draft PR: $PR_URL" >> "$GITHUB_STEP_SUMMARY"
+
+  review:
+    name: Revisar com ${{ inputs.reviewer }}
+    needs:
+      - implement
+      - publish
+    if: needs.publish.outputs.pr_number != '' && inputs.reviewer != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ needs.publish.outputs.pr_number }}
+      BRANCH_NAME: ${{ needs.implement.outputs.branch_name }}
+
+    steps:
+      - name: Validar credencial do revisor
+        env:
+          SELECTED_REVIEWER: ${{ inputs.reviewer }}
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SELECTED_REVIEWER" in
+            codex)
+              [ -n "$OPENAI_KEY" ] || { echo 'OPENAI_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            deepseek)
+              [ -n "$DEEPSEEK_KEY" ] || { echo 'DEEPSEEK_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+          esac
+
+      - name: Checkout branch AI
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.implement.outputs.branch_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Preparar contexto
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '# Pull request metadata'
+            gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json number,title,body,baseRefName,headRefName,files
+            echo
+            echo '# Pull request diff'
+            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+          } > AI_REVIEW_CONTEXT.md
+
+      - name: Codex - review read-only
+        id: codex_review
+        if: inputs.reviewer == 'codex'
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':read-only'
+          model: ${{ vars.AI_CODEX_MODEL }}
+          prompt: |
+            Read `.ai/prompts/review.md` and `AI_REVIEW_CONTEXT.md`.
+            Review only this PR. Do not modify files, commit, push, or merge.
+            Focus on correctness, regressions, security/privacy, compatibility,
+            missing tests, edge cases, performance, and unnecessary complexity.
+            Classify findings as critical/high/medium/low. If there are no meaningful
+            findings, say so explicitly. Return only the review text.
+
+      - name: Publicar review Codex
+        if: inputs.reviewer == 'codex'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_TEXT: ${{ steps.codex_review.outputs.final-message }}
+        shell: bash
+        run: |
+          {
+            echo '## Codex review'
+            echo
+            printf '%s\n' "$REVIEW_TEXT"
+          } > /tmp/review.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/review.md
+
+      - name: Preparar prompt DeepSeek review
+        if: inputs.reviewer == 'deepseek'
+        shell: bash
+        run: |
+          {
+            echo 'Read .ai/prompts/review.md and AI_REVIEW_CONTEXT.md.'
+            echo 'Review only this PR in strict read-only mode.'
+            echo 'Return only the review text.'
+          } > /tmp/deepseek-review-prompt.md
+
+      - name: DeepSeek - review read-only
+        if: inputs.reviewer == 'deepseek'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          AI_DEEPSEEK_MODEL: ${{ vars.AI_DEEPSEEK_MODEL }}
+        run: |
+          python .ai/deepseek_agent.py \
+            --mode review \
+            --prompt-file /tmp/deepseek-review-prompt.md \
+            --output-file /tmp/deepseek-review.md \
+            --max-turns 12
+
+      - name: Publicar review DeepSeek
+        if: inputs.reviewer == 'deepseek'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '## DeepSeek review'
+            echo
+            cat /tmp/deepseek-review.md
+          } > /tmp/review.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/review.md
+
+      - name: Limpar contexto temporario
+        if: always()
+        run: rm -f AI_REVIEW_CONTEXT.md /tmp/deepseek-review-prompt.md /tmp/deepseek-review.md
+
+  review_gate:
+    name: Human review gate
+    needs:
+      - publish
+      - review
+    if: always() && needs.publish.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Registrar status final
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.publish.outputs.pr_number }}
+          REVIEWER: ${{ inputs.reviewer }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "## AI DeepSeek status
+
+          - Implementer: **deepseek**
+          - Reviewer: **${REVIEWER}**
+          - Review job: **${REVIEW_RESULT}**
+
+          The pull request remains a **draft**. Merge remains a human decision."
