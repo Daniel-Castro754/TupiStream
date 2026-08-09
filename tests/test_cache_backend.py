@@ -1,4 +1,5 @@
 import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -19,6 +20,19 @@ class TestSQLiteCacheBackendBasico:
         await backend.init()
 
         assert db_path.exists()
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_init_aceita_caminho_sem_diretorio(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        backend = SQLiteCacheBackend(db_path="cache.db")
+        mock_db = AsyncMock()
+
+        with patch("app.services.cache.aiosqlite.connect", AsyncMock(return_value=mock_db)):
+            await backend.init()
+
+        mock_db.execute.assert_awaited_once()
+        mock_db.commit.assert_awaited_once()
         await backend.close()
 
     @pytest.mark.asyncio
