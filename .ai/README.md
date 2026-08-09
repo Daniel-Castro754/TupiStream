@@ -17,17 +17,19 @@ Supported providers:
 - `claude`
 - `none` for reviewer slots only
 
-The same provider may be used more than once, but independent providers are usually more useful for review.
+The same provider may be used more than once. Independent providers can add diversity to review, but using a single available provider is fully supported.
 
 ## Current recommended setup
 
-With OpenAI and Gemini credentials configured:
+When Codex is the available provider:
 
 - Implementer: `codex`
-- Reviewer 1: `gemini`
+- Reviewer 1: `codex`
 - Reviewer 2: `none`
 
-If OpenAI quota or pricing becomes undesirable, switch the implementer to `gemini` for that run. If an Anthropic credential is added later, `claude` becomes available in any role without redesigning the workflow.
+For lower token usage, set both reviewer slots to `none` and perform the final review manually.
+
+Gemini and Claude remain optional choices. They can be selected again later without redesigning the workflow whenever their credentials, quota, or pricing make sense.
 
 ## Repository secrets
 
@@ -65,7 +67,7 @@ Example low-risk setup:
 
 - Task type: `tests`
 - Implementer: `codex`
-- Reviewer 1: `gemini`
+- Reviewer 1: `codex`
 - Reviewer 2: `none`
 
 ## Resumable execution
@@ -119,7 +121,7 @@ Inputs:
 Example:
 
 - PR number: `8`
-- Reviewer 1: `gemini`
+- Reviewer 1: `codex`
 - Reviewer 2: `none`
 
 This workflow never runs an implementer. It only reviews the existing PR and therefore is useful after partial failures or when you intentionally want to change reviewers later.
@@ -145,7 +147,8 @@ If a later stage fails:
 
 1. Prefer **Re-run failed jobs** rather than re-running the entire workflow.
 2. If the PR already exists and you only need reviews, use **AI Review Existing PR**.
-3. Do not start a brand-new AI Orchestrator run merely to recover a publishing or review failure; a new run receives a new `GITHUB_RUN_ID` and is treated as a new implementation task.
+3. If a provider is unavailable or out of quota, choose another provider explicitly instead of using automatic fallback. This keeps API spending predictable.
+4. Do not start a brand-new AI Orchestrator run merely to recover a publishing or review failure; a new run receives a new `GITHUB_RUN_ID` and is treated as a new implementation task.
 
 ## Safety model
 
