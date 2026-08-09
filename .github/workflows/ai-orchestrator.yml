@@ -63,15 +63,43 @@ jobs:
     timeout-minutes: 40
     permissions:
       contents: write
-      pull-requests: write
     outputs:
       branch_name: ${{ steps.branch.outputs.branch_name }}
+      reused_branch: ${{ steps.branch.outputs.reused_branch }}
       has_changes: ${{ steps.changes.outputs.has_changes }}
-      pr_number: ${{ steps.pr.outputs.pr_number }}
-      pr_url: ${{ steps.pr.outputs.pr_url }}
+      compile_result: ${{ steps.compile.outcome }}
+      ruff_result: ${{ steps.ruff.outcome }}
+      pytest_result: ${{ steps.pytest.outcome }}
+      docker_result: ${{ steps.docker.outcome }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Preparar branch idempotente
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="ai/run-${GITHUB_RUN_ID}"
+
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" >/dev/null 2>&1; then
+            echo "Branch $BRANCH_NAME ja existe; reutilizando sem chamar o implementador novamente."
+            git fetch origin "$BRANCH_NAME:$BRANCH_NAME"
+            git checkout "$BRANCH_NAME"
+            echo "reused_branch=true" >> "$GITHUB_OUTPUT"
+          else
+            git checkout -b "$BRANCH_NAME"
+            echo "reused_branch=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Validar credencial do implementador
+        if: steps.branch.outputs.reused_branch != 'true'
         env:
           SELECTED_PROVIDER: ${{ inputs.implementer }}
           OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -96,35 +124,22 @@ jobs:
               ;;
           esac
 
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
       - name: Python 3.11
+        if: steps.branch.outputs.reused_branch != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
 
       - name: Instalar dependencias antes dos agentes
+        if: steps.branch.outputs.reused_branch != 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Criar branch isolada
-        id: branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH_NAME="ai/run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          git checkout -b "$BRANCH_NAME"
-          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
-
       - name: Codex - implementar
         id: implement_codex
-        if: inputs.implementer == 'codex'
+        if: steps.branch.outputs.reused_branch != 'true' && inputs.implementer == 'codex'
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -152,7 +167,7 @@ jobs:
 
       - name: Gemini - implementar
         id: implement_gemini
-        if: inputs.implementer == 'gemini'
+        if: steps.branch.outputs.reused_branch != 'true' && inputs.implementer == 'gemini'
         uses: google-github-actions/run-gemini-cli@v0
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
@@ -205,7 +220,7 @@ jobs:
 
       - name: Claude - implementar
         id: implement_claude
-        if: inputs.implementer == 'claude'
+        if: steps.branch.outputs.reused_branch != 'true' && inputs.implementer == 'claude'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -238,7 +253,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CHANGED_FILES="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+
+          if [ "${{ steps.branch.outputs.reused_branch }}" = "true" ]; then
+            CHANGED_FILES="$(git diff --name-only origin/main...HEAD | sort -u)"
+          else
+            CHANGED_FILES="$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)"
+          fi
 
           echo "Arquivos alterados:"
           printf '%s\n' "$CHANGED_FILES"
@@ -258,30 +278,30 @@ jobs:
 
       - name: Validar sintaxe
         id: compile
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
         continue-on-error: true
         run: python -m compileall -q app
 
       - name: Ruff - erros criticos
         id: ruff
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
         continue-on-error: true
         run: ruff check app tests --select E9,F63,F7,F82
 
       - name: Pytest
         id: pytest
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
         continue-on-error: true
         run: python -m pytest -q
 
       - name: Docker build
         id: docker
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
         continue-on-error: true
         run: docker build -t br-stremio-addon .
 
       - name: Commit e push da branch AI
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.branch.outputs.reused_branch != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH_NAME: ${{ steps.branch.outputs.branch_name }}
@@ -296,75 +316,98 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --set-upstream origin "$BRANCH_NAME"
 
-      - name: Criar draft pull request
+      - name: Registrar reutilizacao sem custo de modelo
+        if: steps.branch.outputs.reused_branch == 'true'
+        run: |
+          echo "A branch remota desta execucao ja existia." >> "$GITHUB_STEP_SUMMARY"
+          echo "O implementador nao foi chamado novamente; nenhum token de implementacao foi consumido neste retry." >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publicar ou reutilizar draft PR
+    needs: implement
+    if: needs.implement.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      pr_url: ${{ steps.pr.outputs.pr_url }}
+
+    steps:
+      - name: Criar ou reutilizar draft pull request
         id: pr
-        if: steps.changes.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH_NAME: ${{ steps.branch.outputs.branch_name }}
+          BRANCH_NAME: ${{ needs.implement.outputs.branch_name }}
+          REUSED_BRANCH: ${{ needs.implement.outputs.reused_branch }}
           USER_PROMPT: ${{ inputs.prompt }}
           IMPLEMENTER: ${{ inputs.implementer }}
           REVIEWER_1: ${{ inputs.reviewer_1 }}
           REVIEWER_2: ${{ inputs.reviewer_2 }}
-          CODEX_SUMMARY: ${{ steps.implement_codex.outputs.final-message }}
-          GEMINI_SUMMARY: ${{ steps.implement_gemini.outputs.summary }}
-          COMPILE_RESULT: ${{ steps.compile.outcome }}
-          RUFF_RESULT: ${{ steps.ruff.outcome }}
-          PYTEST_RESULT: ${{ steps.pytest.outcome }}
-          DOCKER_RESULT: ${{ steps.docker.outcome }}
+          COMPILE_RESULT: ${{ needs.implement.outputs.compile_result }}
+          RUFF_RESULT: ${{ needs.implement.outputs.ruff_result }}
+          PYTEST_RESULT: ${{ needs.implement.outputs.pytest_result }}
+          DOCKER_RESULT: ${{ needs.implement.outputs.docker_result }}
         shell: bash
         run: |
           set -euo pipefail
 
-          IMPLEMENTATION_SUMMARY="$CODEX_SUMMARY"
-          if [ -z "$IMPLEMENTATION_SUMMARY" ]; then
-            IMPLEMENTATION_SUMMARY="$GEMINI_SUMMARY"
+          PR_NUMBER="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH_NAME" --base main --state open --json number --jq '.[0].number // empty')"
+
+          if [ -n "$PR_NUMBER" ]; then
+            PR_URL="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')"
+            echo "PR #${PR_NUMBER} ja existe; reutilizando." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo '## AI Orchestrator run'
+              echo
+              echo "**Task type:** \`${{ inputs.task_type }}\`"
+              echo "**Implementer:** \`${IMPLEMENTER}\`"
+              echo "**Reviewer 1:** \`${REVIEWER_1}\`"
+              echo "**Reviewer 2:** \`${REVIEWER_2}\`"
+              echo "**Triggered by:** \`${GITHUB_ACTOR}\`"
+              echo "**Workflow run:** \`${GITHUB_RUN_ID}\`"
+              echo
+              echo '### Prompt'
+              printf '%s\n' "$USER_PROMPT"
+              echo
+              echo '### Validation'
+              if [ "$REUSED_BRANCH" = "true" ]; then
+                echo '- Branch reused from an earlier successful implementation stage of this same workflow run.'
+                echo '- The model implementation step was not called again during this retry.'
+              else
+                echo "- compileall: ${COMPILE_RESULT}"
+                echo "- Ruff critical checks: ${RUFF_RESULT}"
+                echo "- Pytest: ${PYTEST_RESULT}"
+                echo "- Docker build: ${DOCKER_RESULT}"
+              fi
+              echo
+              echo '> This PR is intentionally a draft. AI reviewers cannot merge it; final approval stays human.'
+            } > /tmp/ai-pr-body.md
+
+            PR_URL="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --base main \
+              --head "$BRANCH_NAME" \
+              --title "AI: ${{ inputs.task_type }} via ${IMPLEMENTER} (run ${GITHUB_RUN_ID})" \
+              --body-file /tmp/ai-pr-body.md)"
+
+            PR_NUMBER="$(gh pr view "$PR_URL" --repo "$GITHUB_REPOSITORY" --json number --jq '.number')"
           fi
-          if [ -z "$IMPLEMENTATION_SUMMARY" ]; then
-            IMPLEMENTATION_SUMMARY="${IMPLEMENTER} completed the implementation step. Review the diff for details."
-          fi
 
-          {
-            echo '## AI Orchestrator run'
-            echo
-            echo "**Task type:** \`${{ inputs.task_type }}\`"
-            echo "**Implementer:** \`${IMPLEMENTER}\`"
-            echo "**Reviewer 1:** \`${REVIEWER_1}\`"
-            echo "**Reviewer 2:** \`${REVIEWER_2}\`"
-            echo "**Triggered by:** \`${GITHUB_ACTOR}\`"
-            echo
-            echo '### Prompt'
-            printf '%s\n' "$USER_PROMPT"
-            echo
-            echo '### Implementation summary'
-            printf '%s\n' "$IMPLEMENTATION_SUMMARY"
-            echo
-            echo '### Local validation'
-            echo "- compileall: ${COMPILE_RESULT}"
-            echo "- Ruff critical checks: ${RUFF_RESULT}"
-            echo "- Pytest: ${PYTEST_RESULT}"
-            echo "- Docker build: ${DOCKER_RESULT}"
-            echo
-            echo '> This PR is intentionally a draft. AI reviewers cannot merge it; final approval stays human.'
-          } > /tmp/ai-pr-body.md
-
-          PR_URL="$(gh pr create \
-            --draft \
-            --base main \
-            --head "$BRANCH_NAME" \
-            --title "AI: ${{ inputs.task_type }} via ${IMPLEMENTER} (run ${GITHUB_RUN_ID})" \
-            --body-file /tmp/ai-pr-body.md)"
-
-          PR_NUMBER="$(gh pr view "$PR_URL" --json number --jq '.number')"
-
-          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "Draft PR: $PR_URL" >> "$GITHUB_STEP_SUMMARY"
 
   review:
-    name: Review ${{ matrix.slot }}
-    needs: implement
-    if: needs.implement.outputs.pr_number != ''
+    name: Revisar ${{ matrix.slot }}
+    needs:
+      - implement
+      - publish
+    if: needs.publish.outputs.pr_number != ''
     runs-on: ubuntu-latest
     timeout-minutes: 18
     strategy:
@@ -379,7 +422,7 @@ jobs:
       pull-requests: write
     env:
       SELECTED_REVIEWER: ${{ matrix.slot == 'reviewer_1' && inputs.reviewer_1 || inputs.reviewer_2 }}
-      PR_NUMBER: ${{ needs.implement.outputs.pr_number }}
+      PR_NUMBER: ${{ needs.publish.outputs.pr_number }}
       BRANCH_NAME: ${{ needs.implement.outputs.branch_name }}
 
     steps:
@@ -408,8 +451,31 @@ jobs:
               ;;
           esac
 
-      - name: Checkout branch AI
+      - name: Verificar se este commit ja foi revisado neste slot
+        id: dedupe
         if: env.SELECTED_REVIEWER != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLOT: ${{ matrix.slot }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          MARKER="<!-- ai-review:${HEAD_SHA}:${SLOT}:${SELECTED_REVIEWER} -->"
+          EXISTING="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -n 1 || true)"
+
+          if [ -n "$EXISTING" ]; then
+            echo "already_done=true" >> "$GITHUB_OUTPUT"
+            echo "Review ja existe para ${SELECTED_REVIEWER}/${SLOT} no commit ${HEAD_SHA}; modelo nao sera chamado novamente." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "already_done=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "marker=$MARKER" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout branch AI
+        if: env.SELECTED_REVIEWER != 'none' && steps.dedupe.outputs.already_done != 'true'
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.implement.outputs.branch_name }}
@@ -417,7 +483,7 @@ jobs:
           persist-credentials: false
 
       - name: Preparar contexto de review
-        if: env.SELECTED_REVIEWER != 'none'
+        if: env.SELECTED_REVIEWER != 'none' && steps.dedupe.outputs.already_done != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -433,7 +499,7 @@ jobs:
 
       - name: Codex - review read-only
         id: review_codex
-        if: env.SELECTED_REVIEWER == 'codex'
+        if: env.SELECTED_REVIEWER == 'codex' && steps.dedupe.outputs.already_done != 'true'
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -451,15 +517,17 @@ jobs:
             meaningful findings, say so explicitly. Return only the review text.
 
       - name: Publicar review do Codex
-        if: env.SELECTED_REVIEWER == 'codex'
+        if: env.SELECTED_REVIEWER == 'codex' && steps.dedupe.outputs.already_done != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_TEXT: ${{ steps.review_codex.outputs.final-message }}
           SLOT: ${{ matrix.slot }}
+          MARKER: ${{ steps.dedupe.outputs.marker }}
         shell: bash
         run: |
           set -euo pipefail
           {
+            echo "$MARKER"
             echo "## Codex review (${SLOT})"
             echo
             printf '%s\n' "$REVIEW_TEXT"
@@ -468,7 +536,7 @@ jobs:
 
       - name: Gemini - review read-only
         id: review_gemini
-        if: env.SELECTED_REVIEWER == 'gemini'
+        if: env.SELECTED_REVIEWER == 'gemini' && steps.dedupe.outputs.already_done != 'true'
         uses: google-github-actions/run-gemini-cli@v0
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
@@ -506,15 +574,17 @@ jobs:
             meaningful findings, say so explicitly. Return only the review text.
 
       - name: Publicar review do Gemini
-        if: env.SELECTED_REVIEWER == 'gemini'
+        if: env.SELECTED_REVIEWER == 'gemini' && steps.dedupe.outputs.already_done != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REVIEW_TEXT: ${{ steps.review_gemini.outputs.summary }}
           SLOT: ${{ matrix.slot }}
+          MARKER: ${{ steps.dedupe.outputs.marker }}
         shell: bash
         run: |
           set -euo pipefail
           {
+            echo "$MARKER"
             echo "## Gemini review (${SLOT})"
             echo
             printf '%s\n' "$REVIEW_TEXT"
@@ -522,11 +592,10 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/review-comment.md
 
       - name: Claude - review read-only
-        if: env.SELECTED_REVIEWER == 'claude'
+        if: env.SELECTED_REVIEWER == 'claude' && steps.dedupe.outputs.already_done != 'true'
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ github.token }}
-          SLOT: ${{ matrix.slot }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -539,8 +608,10 @@ jobs:
             tests, edge cases, performance, and unnecessary complexity. Classify findings
             as critical/high/medium/low. If no meaningful issues are found, say so.
 
-            Post exactly one top-level comment to PR #${{ needs.implement.outputs.pr_number }}
-            using `gh pr comment`. Begin with `## Claude review (${{ matrix.slot }})`.
+            Post exactly one top-level comment to PR #${{ needs.publish.outputs.pr_number }}
+            using `gh pr comment`. The FIRST line of the comment must be exactly:
+            `${{ steps.dedupe.outputs.marker }}`
+            The second line must be `## Claude review (${{ matrix.slot }})`.
           claude_args: ${{ vars.AI_CLAUDE_MODEL != '' && format('--max-turns 10 --model {0}', vars.AI_CLAUDE_MODEL) || '--max-turns 10' }}
           settings: |-
             {
@@ -551,25 +622,25 @@ jobs:
             }
 
       - name: Remover contexto temporario
-        if: always() && env.SELECTED_REVIEWER != 'none'
+        if: always() && env.SELECTED_REVIEWER != 'none' && steps.dedupe.outputs.already_done != 'true'
         run: rm -f AI_REVIEW_CONTEXT.md
 
   review_gate:
     name: Human review gate
     needs:
-      - implement
+      - publish
       - review
-    if: always() && needs.implement.outputs.pr_number != ''
+    if: always() && needs.publish.outputs.pr_number != ''
     runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: write
 
     steps:
-      - name: Registrar status final no PR
+      - name: Registrar status final sem duplicar comentario
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ needs.implement.outputs.pr_number }}
+          PR_NUMBER: ${{ needs.publish.outputs.pr_number }}
           IMPLEMENTER: ${{ inputs.implementer }}
           REVIEWER_1: ${{ inputs.reviewer_1 }}
           REVIEWER_2: ${{ inputs.reviewer_2 }}
@@ -577,7 +648,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "## AI orchestration status
+          MARKER="<!-- ai-orchestration-status:${GITHUB_RUN_ID} -->"
+          EXISTING="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -n 1 || true)"
+
+          if [ -n "$EXISTING" ]; then
+            echo "Status final ja publicado para este workflow run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${MARKER}
+          ## AI orchestration status
 
           - Implementer: **${IMPLEMENTER}**
           - Reviewer 1: **${REVIEWER_1}**
