@@ -25,3 +25,7 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Gemini CLI / GitHub App local state
+.gemini/
+gha-creds-*.json

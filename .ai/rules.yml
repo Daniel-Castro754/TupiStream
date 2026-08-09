@@ -1,0 +1,83 @@
+version: 2
+
+orchestrator:
+  trigger: workflow_dispatch
+  allowed_actors:
+    - Daniel-Castro754
+  human_approval_required: true
+  auto_merge: false
+
+providers:
+  supported:
+    - codex
+    - gemini
+    - claude
+  credentials:
+    codex: OPENAI_API_KEY
+    gemini: GEMINI_API_KEY
+    claude: ANTHROPIC_API_KEY
+  optional_model_variables:
+    codex: AI_CODEX_MODEL
+    gemini: AI_GEMINI_MODEL
+    claude: AI_CLAUDE_MODEL
+  missing_credential_policy: fail_selected_role_only
+
+roles:
+  implementer:
+    selectable: true
+    default: codex
+  reviewer_1:
+    selectable: true
+    default: gemini
+    allow_none: true
+  reviewer_2:
+    selectable: true
+    default: none
+    allow_none: true
+
+branches:
+  protected:
+    - main
+  ai_prefix: ai/run-
+  direct_push_to_protected: false
+
+implementation:
+  commit_or_push_by_agent: false
+  requirements:
+    - Keep changes minimal and scoped to the user prompt.
+    - Do not expose, print, copy, or persist secrets.
+    - Do not change public APIs unless the prompt explicitly authorizes it.
+    - Do not weaken authentication, authorization, validation, or security controls.
+    - Preserve backwards compatibility unless explicitly told otherwise.
+    - Add or update tests when behavior changes.
+  forbidden_paths:
+    - .github/**
+    - .ai/**
+
+validation:
+  commands:
+    - python -m compileall -q app
+    - ruff check app tests --select E9,F63,F7,F82
+    - python -m pytest -q
+    - docker build -t br-stremio-addon .
+  failure_policy: keep_pr_draft
+
+review:
+  mode: read_only
+  selectable_providers:
+    - codex
+    - gemini
+    - claude
+    - none
+  expectations:
+    - Look for correctness bugs and regressions.
+    - Look for security and privacy issues.
+    - Look for missing tests and edge cases.
+    - Look for compatibility and performance regressions.
+    - Flag unnecessary complexity or scope creep.
+    - Never merge the pull request.
+
+merge:
+  actor: human_only
+  required_branch: main
+  require_ci: true
