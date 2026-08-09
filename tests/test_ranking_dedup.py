@@ -73,6 +73,16 @@ class TestDeduplicacaoReconciliaMetadados:
         assert len(resultado) == 1
         assert resultado[0].quality == "1080p"
 
+    def test_hash_equivalente_com_caixa_e_espacos_diferentes_e_mesclado(self):
+        aggregator = self._aggregator()
+        primeiro = _torrent(info_hash=" " + "A" * 40 + " ", source="Brazuca Torrents")
+        segundo = _torrent(info_hash="a" * 40, source="Apache Torrent")
+
+        resultado = aggregator._deduplicate([primeiro, segundo])
+
+        assert len(resultado) == 1
+        assert resultado[0].source == "Brazuca Torrents + Apache Torrent"
+
     def test_dublado_e_aditivo_entre_fontes(self):
         aggregator = self._aggregator()
         primeiro = _torrent(dubbed=False, source="Brazuca Torrents")
