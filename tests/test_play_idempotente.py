@@ -18,7 +18,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.routes.stream import _PlayLocks, _persistir_progresso
+from app.routes.stream import (
+    PLAY_SESSION_TTL_SECONDS,
+    _PlayLocks,
+    _persistir_progresso,
+    _ttl_restante_da_sessao,
+)
 from app.services.real_debrid import EstadoPlayback, RealDebridService
 
 
@@ -222,3 +227,50 @@ class TestPersistenciaDoProgresso:
 
         with patch("app.routes.stream.cache", mock_cache):
             await _persistir_progresso("play:x", {}, estado, "r1")  # nao levanta
+
+
+class TestTtlNaoEhRenovado:
+    """
+    `cache.set` faz INSERT OR REPLACE e regrava `created_at`. Gravar o
+    checkpoint com o TTL cheio reiniciaria os 30 minutos — e um cliente
+    insistindo em retry manteria a sessao, com o token RD em texto puro
+    dentro dela, viva indefinidamente.
+    """
+
+    def test_sessao_recem_criada_mantem_o_ttl_cheio(self):
+        import time
+
+        ttl = _ttl_restante_da_sessao({"created_at": time.time()})
+        assert ttl == PLAY_SESSION_TTL_SECONDS
+
+    def test_sessao_antiga_recebe_apenas_o_que_resta(self):
+        import time
+
+        ttl = _ttl_restante_da_sessao({"created_at": time.time() - 1500})
+        assert 290 <= ttl <= 310, ttl
+        assert ttl < PLAY_SESSION_TTL_SECONDS
+
+    def test_sessao_ja_expirada_nao_devolve_ttl_negativo(self):
+        import time
+
+        assert _ttl_restante_da_sessao({"created_at": time.time() - 9999}) == 1
+
+    def test_sessao_sem_created_at_cai_no_ttl_cheio(self):
+        assert _ttl_restante_da_sessao({}) == PLAY_SESSION_TTL_SECONDS
+        assert _ttl_restante_da_sessao({"created_at": "invalido"}) == PLAY_SESSION_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_nao_estende_a_sessao(self):
+        import time
+
+        from app.services.real_debrid import EstadoPlayback
+
+        sessao = {"created_at": time.time() - 1500, "rd_token": "t", "magnet": "m"}
+        mock_cache = AsyncMock()
+        with patch("app.routes.stream.cache", mock_cache):
+            await _persistir_progresso(
+                "play:x", sessao, EstadoPlayback(rd_torrent_id="t1"), "r1"
+            )
+
+        ttl = mock_cache.set.await_args.kwargs["ttl"]
+        assert ttl < PLAY_SESSION_TTL_SECONDS, f"ttl={ttl} renovaria a sessao"

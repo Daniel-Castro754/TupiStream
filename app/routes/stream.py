@@ -70,6 +70,25 @@ class _PlayLocks:
 _play_locks = _PlayLocks()
 
 
+def _ttl_restante_da_sessao(session_data: dict) -> int:
+    """
+    TTL que resta desde a CRIACAO da sessao, nao 30 min a partir de agora.
+
+    `cache.set` faz INSERT OR REPLACE e regrava `created_at`, entao gravar
+    com o TTL cheio reinicia a janela de 30 minutos. Com um cliente
+    insistindo em retry, a sessao — e o token Real-Debrid em texto puro
+    dentro dela — sobreviveria indefinidamente.
+
+    Sessao antiga sem `created_at` cai no TTL cheio: sem a referencia nao
+    da para calcular, e encurtar arbitrariamente seria pior.
+    """
+    criada_em = session_data.get("created_at")
+    if not isinstance(criada_em, (int, float)):
+        return PLAY_SESSION_TTL_SECONDS
+    restante = PLAY_SESSION_TTL_SECONDS - (time.time() - criada_em)
+    return max(1, round(restante))
+
+
 async def _persistir_progresso(
     play_key: str, session_data: dict, estado: EstadoPlayback, req_id: str
 ) -> None:
@@ -90,7 +109,9 @@ async def _persistir_progresso(
     session_data["rd_torrent_id"] = estado.rd_torrent_id
     session_data["selected_file_id"] = estado.selected_file_id
     try:
-        await cache.set(play_key, session_data, ttl=PLAY_RESOLVED_URL_TTL_SECONDS)
+        await cache.set(
+            play_key, session_data, ttl=_ttl_restante_da_sessao(session_data)
+        )
         logger.info(
             f"[{req_id}] [PLAY] progresso salvo "
             f"(torrent={estado.rd_torrent_id}, arquivo={estado.selected_file_id})"
@@ -399,7 +420,9 @@ async def _resolver_play(play_id: str, request: Request):
         session_data["rd_torrent_id"] = estado.rd_torrent_id
         session_data["selected_file_id"] = estado.selected_file_id
         try:
-            await cache.set(play_key, session_data, ttl=PLAY_RESOLVED_URL_TTL_SECONDS)
+            await cache.set(
+                play_key, session_data, ttl=_ttl_restante_da_sessao(session_data)
+            )
         except CacheWriteError as exc:
             logger.warning(
                 f"[{req_id}] [PLAY] {method} nao foi possivel cachear a URL "
