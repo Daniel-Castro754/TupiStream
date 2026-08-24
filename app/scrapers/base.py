@@ -3,7 +3,7 @@ import contextvars
 import logging
 import time
 from abc import ABC, abstractmethod
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -101,6 +101,63 @@ class BaseScraper(ABC):
         if req_id:
             return f"[{req_id}] [{self.name}]"
         return f"[{self.name}]"
+
+    def _hosts_permitidos(self) -> frozenset[str]:
+        """
+        Hosts que este scraper pode acessar: o base_url mais os mirrors.
+
+        Aceita a variante com e sem "www." do mesmo site, porque a lista de
+        mirrors declarada nos scrapers mistura as duas formas.
+        """
+        urls = [self.base_url, *getattr(self, "_fallback_urls", [])]
+        hosts: set[str] = set()
+        for u in urls:
+            host = (urlparse(u).hostname or "").lower().rstrip(".")
+            if not host:
+                continue
+            hosts.add(host)
+            hosts.add(host[4:] if host.startswith("www.") else f"www.{host}")
+        return frozenset(hosts)
+
+    def _url_do_mesmo_site(self, href: str, pagina_atual: str = "") -> str | None:
+        """
+        Resolve `href` contra a pagina atual e devolve a URL absoluta apenas
+        se o HOST for um dos mirrors conhecidos deste scraper.
+
+        O href vem do HTML da fonte — conteudo externo, controlado por quem
+        publica no site. A checagem anterior nos WordPress era
+        `dominio in href`, ou seja SUBSTRING, e aceitava qualquer destino que
+        apenas contivesse o dominio em qualquer posicao:
+
+            https://evil.example/?next=apachetorrent.com  -> evil.example
+            https://apachetorrent.com@169.254.169.254/    -> metadata da nuvem
+            https://apachetorrent.com.evil.example/       -> outro dono
+            http://127.0.0.1:8000/apachetorrent.com       -> loopback
+            http://[::1]:6379/apachetorrent.com           -> Redis local
+
+        O href aprovado ia direto para self._get(), que faz a requisicao a
+        partir do servidor do addon — e dois dos scrapers afetados estao
+        ativos por padrao.
+
+        Comparar o hostname RESOLVIDO contra uma allowlist fecha isso.
+        Credencial embutida e esquema fora de http/https tambem sao
+        recusados: sao as duas formas classicas de disfarcar o destino.
+        """
+        if not href:
+            return None
+        try:
+            absoluta = urljoin(pagina_atual or self.base_url, href.strip())
+            partes = urlparse(absoluta)
+        except ValueError:
+            return None
+        if partes.scheme not in ("http", "https"):
+            return None
+        if partes.username or partes.password:
+            return None
+        host = (partes.hostname or "").lower().rstrip(".")
+        if host not in self._hosts_permitidos():
+            return None
+        return absoluta
 
     @staticmethod
     def _origin(url: str) -> str:
@@ -227,11 +284,25 @@ class BaseScraper(ABC):
                 logger.debug(f"{prefix} Mirror falhou: {url} ({self.last_error})")
                 continue
 
+            # So adota como novo base_url uma origem que ja esteja na
+            # allowlist. Antes, um redirect para qualquer host reapontava o
+            # scraper PERMANENTEMENTE — a instancia e um singleton criado no
+            # startup — e _prioritize_fallback_urls passava a PREFERIR esse
+            # destino nas buscas seguintes. Um unico redirect malicioso
+            # contaminava todas as requisicoes daquele scraper pelo resto da
+            # vida do processo.
             parsed = urlparse(str(response.url))
             new_base = f"{parsed.scheme}://{parsed.netloc}"
+            host_novo = (parsed.hostname or "").lower().rstrip(".")
             if new_base and new_base != self.base_url:
-                logger.info(f"{prefix} URL ativa: {new_base}")
-                self.base_url = new_base
+                if host_novo in self._hosts_permitidos():
+                    logger.info(f"{prefix} URL ativa: {new_base}")
+                    self.base_url = new_base
+                else:
+                    logger.warning(
+                        f"{prefix} redirect para host fora da allowlist "
+                        f"({host_novo}) — base_url mantida"
+                    )
             self.last_error = None
             return response
 

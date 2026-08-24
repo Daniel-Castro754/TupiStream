@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup
 
@@ -72,9 +72,11 @@ class ComandoFilmesScraper(BaseScraper):
             return resultados
 
         soup = BeautifulSoup(response.text, "html.parser")
-        dominio = urlparse(str(response.url)).netloc
+        # A pagina que respondeu, nao so o netloc: e contra ela que os hrefs
+        # relativos sao resolvidos antes da validacao de host.
+        pagina = str(response.url)
 
-        links_posts = self._extrair_links_posts(soup, dominio)
+        links_posts = self._extrair_links_posts(soup, pagina)
         if not links_posts:
             logger.debug(
                 f"[{self.name}] Nenhum post em {response.url} — snippet: "
@@ -122,7 +124,7 @@ class ComandoFilmesScraper(BaseScraper):
             logger.debug(f"[{self.name}] '{query}': {rejeitados} descartados")
         return resultados
 
-    def _extrair_links_posts(self, soup: BeautifulSoup, dominio: str) -> list[str]:
+    def _extrair_links_posts(self, soup: BeautifulSoup, pagina: str) -> list[str]:
         """Tenta múltiplos seletores WordPress em fallback"""
         seletores_article = [
             "article.post",
@@ -142,7 +144,7 @@ class ComandoFilmesScraper(BaseScraper):
                 logger.debug(f"[{self.name}] Seletor '{seletor}' retornou {len(elementos)} elementos")
                 links: list[str] = []
                 for el in elementos:
-                    link = self._extrair_link_de_article(el, dominio)
+                    link = self._extrair_link_de_article(el, pagina)
                     if link and link not in links:
                         links.append(link)
                 if links:
@@ -155,27 +157,27 @@ class ComandoFilmesScraper(BaseScraper):
                 logger.debug(f"[{self.name}] Seletor '{seletor}' retornou {len(elementos)} elementos")
                 links = []
                 for el in elementos:
-                    href = el.get("href", "")
-                    if href and dominio in href and href not in links:
+                    href = self._url_do_mesmo_site(el.get("href", ""), pagina)
+                    if href and href not in links:
                         links.append(href)
                 if links:
                     return links
 
         return []
 
-    def _extrair_link_de_article(self, article: BeautifulSoup, dominio: str) -> str | None:
+    def _extrair_link_de_article(self, article: BeautifulSoup, pagina: str) -> str | None:
         """Extrai o link principal de um elemento <article>"""
         for sel in ["h2 a", "h3 a", ".entry-title a"]:
             tag = article.select_one(sel)
             if tag:
-                href = tag.get("href", "")
-                if href and dominio in href:
+                href = self._url_do_mesmo_site(tag.get("href", ""), pagina)
+                if href:
                     return href
 
         # Fallback: primeiro <a> com href contendo o domínio
         for tag in article.find_all("a", href=True):
-            href = tag["href"]
-            if dominio in href:
+            href = self._url_do_mesmo_site(tag["href"], pagina)
+            if href:
                 return href
         return None
 

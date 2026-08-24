@@ -74,9 +74,13 @@ class HDRTorrentScraper(BaseScraper):
 
         # Extrai links dos posts (padrão WordPress)
         links_posts: list[str] = []
+        pagina = str(response.url)
         for tag in soup.select("article a, .post a, h2 a, h3 a"):
-            href = tag.get("href", "")
-            if href and href.startswith("http") and href not in links_posts:
+            # Antes bastava comecar com "http": QUALQUER URL absoluta era
+            # aceita, sem checagem nenhuma de host. Estes dois estavam ainda
+            # mais abertos que os WordPress com substring.
+            href = self._url_do_mesmo_site(tag.get("href", ""), pagina)
+            if href and href not in links_posts:
                 links_posts.append(href)
 
         if not links_posts:
