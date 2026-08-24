@@ -110,6 +110,24 @@ class ScrapeOutcome:
         )
 
 
+def _binge_group(torrent: TorrentResult, canal: str) -> str:
+    """
+    Grupo de binge estavel entre episodios.
+
+    Era `f"rd-{info_hash[:8]}"` — unico por torrent, entao NUNCA casava com
+    o episodio seguinte e o proposito do campo simplesmente nao acontecia.
+    O bingeGroup existe para o Stremio reusar o MESMO tipo de stream ao
+    avancar na serie; se o identificador muda a cada episodio, nao ha o que
+    reusar.
+
+    Qualidade e idioma sao o que o usuario quer manter constante ao
+    maratonar, e sao estaveis entre episodios.
+    """
+    idioma = "ptbr" if torrent.dubbed else "orig"
+    qualidade = torrent.quality.lower().replace(" ", "") or "desconhecida"
+    return f"brstreams-{canal}-{qualidade}-{idioma}"
+
+
 def _build_scraper_list() -> list[BaseScraper]:
     """Instancia APENAS os scrapers habilitados por feature flag."""
     active: list[BaseScraper] = []
@@ -403,7 +421,6 @@ class StreamAggregator:
         type: str,
         req_id: str,
         stremio_id: str | None = None,
-        title: str | None = None,
         rd_token: str | None = None,
         include_p2p: bool = False,
         request_base_url: str | None = None,
@@ -565,7 +582,6 @@ class StreamAggregator:
                     self._formatar_stream(
                         torrent=torrent,
                         has_play_url=True,
-                        tem_rd=True,
                         stream_url=f"{base}/play/{play_id}",
                     )
                 )
@@ -576,7 +592,6 @@ class StreamAggregator:
                         self._formatar_stream(
                             torrent=torrent,
                             has_play_url=False,
-                            tem_rd=False,
                             p2p_label=True,
                         )
                     )
@@ -587,7 +602,6 @@ class StreamAggregator:
                     self._formatar_stream(
                         torrent=torrent,
                         has_play_url=False,
-                        tem_rd=False,
                     )
                 )
 
@@ -861,7 +875,15 @@ class StreamAggregator:
 
             existing = by_hash.get(info_hash)
             if existing is None:
-                by_hash[info_hash] = torrent
+                # Guarda com o hash JA normalizado. Antes a normalizacao valia
+                # so para a CHAVE do dicionario, e o objeto seguia com o hash
+                # original — espacos e maiusculas vazavam para o campo infoHash
+                # entregue ao Stremio e para os logs.
+                by_hash[info_hash] = (
+                    torrent
+                    if torrent.info_hash == info_hash
+                    else torrent.model_copy(update={"info_hash": info_hash})
+                )
                 continue
 
             sources = [part.strip() for part in existing.source.split(" + ") if part.strip()]
@@ -872,8 +894,16 @@ class StreamAggregator:
             updates: dict = {"source": " + ".join(sources)}
             if existing.size is None and torrent.size is not None:
                 updates["size"] = torrent.size
-            if (torrent.seeders or 0) > (existing.seeders or 0):
-                updates["seeders"] = torrent.seeders
+            # `(a or 0) > (b or 0)` perdia o zero CONFIRMADO: com
+            # existing=None e novo=0, `0 > 0` e falso e o resultado fica None.
+            # _is_confirmed_dead entao deixava de penalizar um torrent que a
+            # fonte afirmou ter 0 seeders — ele subia no ranking como se a
+            # contagem fosse desconhecida.
+            seeders_conhecidos = [
+                s for s in (existing.seeders, torrent.seeders) if s is not None
+            ]
+            if seeders_conhecidos:
+                updates["seeders"] = max(seeders_conhecidos)
 
             # "Desconhecida" perde para qualquer qualidade identificada por
             # outra fonte.
@@ -946,7 +976,6 @@ class StreamAggregator:
         self,
         torrent: TorrentResult,
         has_play_url: bool,
-        tem_rd: bool,
         stream_url: str | None = None,
         p2p_label: bool = False,
     ) -> StreamResult:
@@ -957,18 +986,26 @@ class StreamAggregator:
           stream_url presente -> url preenchida, infoHash OMITIDO
           stream_url ausente  -> infoHash preenchido, url OMITIDO
           Nunca os dois ao mesmo tempo.
+
+        O parâmetro `tem_rd` saiu: ele só era passado como True junto com
+        `stream_url`, e nesse caminho a função retorna antes de consultá-lo.
+        O ramo `notWebReady` que ele controlava era inalcançável em produção
+        — só um teste o mantinha vivo. A flag foi para onde ela sempre quis
+        estar: no stream do Real-Debrid, que resolve para um link HTTP que
+        frequentemente é MKV e não toca em navegador.
         """
         if stream_url:
             return StreamResult(
                 name=build_stream_name(torrent, has_play_url=True),
                 title=build_stream_title(torrent, has_play_url=True),
                 url=stream_url,
-                behaviorHints={"bingeGroup": f"rd-{torrent.info_hash[:8]}"},
+                behaviorHints={
+                    "bingeGroup": _binge_group(torrent, "rd"),
+                    "notWebReady": True,
+                },
             )
 
-        behavior: dict = {}
-        if tem_rd:
-            behavior = {"notWebReady": True}
+        behavior: dict = {"bingeGroup": _binge_group(torrent, "p2p")}
 
         return StreamResult(
             name=build_stream_name(torrent, has_play_url, p2p=p2p_label),

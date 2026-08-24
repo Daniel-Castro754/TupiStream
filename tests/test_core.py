@@ -61,7 +61,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
             stream_url="http://localhost:8000/play/test-id"
         )
         assert result.url == "http://localhost:8000/play/test-id"
@@ -76,7 +75,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=False,
-            tem_rd=False,
             stream_url=None
         )
         assert result.infoHash == torrent.info_hash
@@ -85,14 +83,22 @@ class TestFormatarStream:
         assert "infoHash" in dumped
         assert "url" not in dumped
 
-    def test_fallback_torrent_com_rd_tem_not_web_ready(self):
-        """Usuário tem RD mas stream é fallback → notWebReady=True"""
+    def test_stream_rd_tem_not_web_ready(self):
+        """
+        REVISTO. Este teste fixava um ramo INALCANCAVEL: `tem_rd=True` so era
+        passado junto com `stream_url`, e nesse caminho _formatar_stream
+        retorna antes de consultar o parametro. Ou seja, a flag nunca chegava
+        a nenhum stream em producao — o teste era a unica coisa que a mantinha
+        viva.
+
+        A flag foi para onde sempre quis estar: no stream do Real-Debrid, que
+        resolve para um link HTTP frequentemente MKV e nao toca em navegador.
+        """
         torrent = _make_torrent()
         result = self.agg._formatar_stream(
             torrent=torrent,
-            has_play_url=False,
-            tem_rd=True,
-            stream_url=None
+            has_play_url=True,
+            stream_url="http://exemplo/play/abc",
         )
         assert result.behaviorHints.get("notWebReady") is True
 
@@ -102,7 +108,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
             stream_url="http://localhost/play/x"
         )
         assert "bingeGroup" in result.behaviorHints
@@ -120,7 +125,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
             stream_url="http://localhost/play/4k"
         )
         assert result.name == "BR Streams • 4K DV HDR • RD"
@@ -142,7 +146,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=False,
-            tem_rd=False,
             stream_url=None
         )
         assert result.name == "BR Streams • 1080p Dual"
@@ -164,7 +167,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
             stream_url="http://localhost/play/serie"
         )
         assert result.name == "BR Streams • 720p • RD"
