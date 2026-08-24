@@ -3,7 +3,7 @@ import contextvars
 import logging
 import time
 from abc import ABC, abstractmethod
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -102,6 +102,87 @@ class BaseScraper(ABC):
             return f"[{req_id}] [{self.name}]"
         return f"[{self.name}]"
 
+    def _hosts_permitidos(self) -> frozenset[str]:
+        """
+        Hosts que este scraper pode acessar: o base_url e os mirrors.
+
+        Derivado da configuracao que ja existe, entao nenhum scraper precisa
+        declarar nada novo. Se o conjunto sair vazio — caso de duble de teste
+        sem base_url —, a validacao nao restringe nada: fechar aqui quebraria
+        testes sem ganho de seguranca real, porque duble nao faz rede.
+        """
+        urls = [self.base_url, *getattr(self, "_fallback_urls", [])]
+        hosts = {
+            (urlparse(u).hostname or "").lower().rstrip(".")
+            for u in urls
+            if u
+        }
+        return frozenset(h for h in hosts if h)
+
+    def _url_permitida(self, url: str) -> bool:
+        """
+        True quando a URL aponta para um host declarado pelo scraper.
+
+        Substitui a checagem `dominio in href`, que comparava SUBSTRING e por
+        isso aceitava qualquer destino que contivesse o dominio em qualquer
+        posicao:
+
+            https://evil.example/?next=apachetorrent.com     -> aceito
+            https://apachetorrent.com@169.254.169.254/       -> aceito
+            https://apachetorrent.com.evil.example/x         -> aceito
+
+        Os tres apontam para fora. O terceiro e o classico: um subdominio
+        controlado pelo atacante que termina com o dominio esperado. O
+        segundo usa userinfo para disfarcar o host real — e 169.254.169.254
+        e o endpoint de metadados de nuvem.
+
+        A comparacao passa a ser de HOSTNAME exato, com esquema e porta
+        restritos e credenciais embutidas recusadas.
+        """
+        permitidos = self._hosts_permitidos()
+        if not permitidos:
+            return True
+
+        try:
+            partes = urlparse(url)
+        except ValueError:
+            return False
+
+        if partes.scheme not in ("http", "https"):
+            return False
+        if partes.username or partes.password:
+            return False
+        try:
+            porta = partes.port
+        except ValueError:
+            return False
+        if porta not in (None, 80, 443):
+            return False
+
+        host = (partes.hostname or "").lower().rstrip(".")
+        return host in permitidos
+
+    def _resolver_link(self, href: str, url_da_pagina: str) -> str | None:
+        """
+        Transforma um href da pagina em URL absoluta validada, ou None.
+
+        `urljoin` resolve link relativo contra a pagina de origem, que e o
+        comportamento correto de um navegador. A validacao vem depois: href
+        vem de HTML de terceiro e nao e evidencia de destino seguro.
+        """
+        if not href:
+            return None
+        try:
+            absoluta = urljoin(url_da_pagina, href.strip())
+        except ValueError:
+            return None
+        if not self._url_permitida(absoluta):
+            logger.warning(
+                f"{self._log_prefix()} link recusado por host nao permitido: {absoluta[:120]}"
+            )
+            return None
+        return absoluta
+
     @staticmethod
     def _origin(url: str) -> str:
         parsed = urlparse(url)
@@ -165,6 +246,18 @@ class BaseScraper(ABC):
                     return None
 
                 response.raise_for_status()
+
+                # O cliente segue redirects (necessario para os mirrors), mas
+                # o DESTINO final tem de continuar permitido: uma fonte
+                # comprometida podia responder 302 para localhost ou para
+                # 169.254.169.254 e o addon buscaria de lá.
+                if not self._url_permitida(str(response.url)):
+                    self.last_error = "redirect para host nao permitido"
+                    logger.warning(
+                        f"{prefix} destino final recusado: {str(response.url)[:120]}"
+                    )
+                    return None
+
                 logger.debug(f"{prefix} GET {status} ({elapsed:.0f}ms)")
                 return response
 
