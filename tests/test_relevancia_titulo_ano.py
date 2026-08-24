@@ -59,7 +59,18 @@ def test_titulo_que_e_um_ano_sobrevive_a_normalizacao(titulo):
 
 @pytest.mark.parametrize(
     "texto",
-    ["Baixar Torrent Dublado 1080p", "Torrent Dublado", "Download Filme Legendado"],
+    [
+        "Baixar Torrent Dublado 1080p",
+        "Torrent Dublado",
+        "Download Filme Legendado",
+        # Puro ruido COM ano do release no fim. Este caso derrubou a primeira
+        # versao do fallback: ela recuperava o 2024 e o teste existente
+        # test_normalizacao_remove_ruido_de_release quebrou. O que separa
+        # "1917" (titulo) de "...Dublado 2024" (ruido) e a POSICAO — release
+        # name comeca pelo titulo.
+        "Baixar Filme Torrent Dublado 1080p 2024",
+        "Torrent Dublado 2024",
+    ],
 )
 def test_texto_que_e_so_ruido_continua_vazio(texto):
     """
@@ -84,3 +95,13 @@ def test_ano_preservado_nao_e_lido_como_sequencia():
     """
     assert is_relevant_release("1917", "1917 2019 1080p Dublado") is True
     assert is_relevant_release("Taken", "Taken 2 2012 1080p") is False
+
+
+def test_ano_no_fim_de_texto_de_ruido_nao_e_recuperado():
+    """
+    A primeira versao do fallback recuperava qualquer ano orfao, e quebrou
+    tests/test_source_quality.py::test_normalizacao_remove_ruido_de_release.
+    O criterio e posicional: so recupera quando o ano e o PRIMEIRO token.
+    """
+    assert normalize_release_title("Baixar Filme Torrent Dublado 1080p 2024") == ""
+    assert normalize_release_title("1917 2019 1080p Dublado") == "1917"

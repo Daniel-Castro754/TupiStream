@@ -47,14 +47,19 @@ def normalize_release_title(value: str) -> str:
             continue
         cleaned.append(token)
 
-    # Se sobrou alguma coisa, os anos eram ruido de release e ficam de fora.
-    # Se nao sobrou NADA, o ano ERA o titulo: "1917", "2012", "1984", "2046"
-    # viravam string vazia, e is_relevant_release rejeita de imediato quando
-    # a query normaliza vazia — apagao total nesses filmes em todas as fontes
-    # que usam o filtro de relevancia. `Baixar Torrent Dublado 1080p` continua
-    # virando string vazia, porque ali nao havia ano nenhum a recuperar.
-    if not cleaned:
-        cleaned = anos
+    # Se sobrou alguma coisa, os anos eram ruido de release e ficam fora.
+    #
+    # Se NAO sobrou nada, o ano pode ser o titulo — "1917", "2012", "1984",
+    # "2046" viravam string vazia, e is_relevant_release rejeita de imediato
+    # quando a query normaliza vazia: apagao total nesses filmes em todas as
+    # fontes que usam o filtro.
+    #
+    # Mas nem todo ano orfao e titulo. "Baixar Torrent Dublado 1080p 2024" e
+    # puro ruido com o ano do release no fim, e deve continuar vazio. O que
+    # separa os dois casos e a POSICAO: release name comeca pelo titulo. So
+    # recuperamos o ano quando ele e o primeiro token do texto.
+    if not cleaned and tokens and re.fullmatch(r"(?:19|20)\d{2}", tokens[0]):
+        cleaned = [tokens[0]]
 
     return " ".join(cleaned)
 
