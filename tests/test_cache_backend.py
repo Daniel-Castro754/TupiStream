@@ -1,5 +1,5 @@
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -33,6 +33,35 @@ class TestSQLiteCacheBackendBasico:
 
         mock_db.execute.assert_awaited_once()
         mock_db.commit.assert_awaited_once()
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_init_nao_chama_makedirs_sem_diretorio_no_path(self, monkeypatch):
+        """
+        Mesma regressão do teste acima, com asserção direta do invariante.
+
+        `os.makedirs(os.path.dirname("cache.db"))` recebia string vazia e
+        levantava FileNotFoundError. O teste anterior cobre isso de forma
+        indireta — se makedirs ainda fosse chamado com "", o init explodiria
+        e o teste falharia. Este afirma a regra em si: sem diretório no path,
+        makedirs não deve ser chamado. Também confirma que o path chega
+        intacto ao aiosqlite.connect.
+
+        Vem da PR #12, que atacou o mesmo bug em paralelo com uma asserção
+        mais precisa. Os dois testes ficam: um garante que o fluxo funciona,
+        o outro garante o motivo pelo qual funciona.
+        """
+        mock_db = AsyncMock()
+        makedirs = Mock()
+        backend = SQLiteCacheBackend(db_path="cache.db")
+
+        conectar = AsyncMock(return_value=mock_db)
+        with patch("app.services.cache.aiosqlite.connect", conectar):
+            with patch("app.services.cache.os.makedirs", makedirs):
+                await backend.init()
+
+        makedirs.assert_not_called()
+        conectar.assert_awaited_once_with("cache.db")
         await backend.close()
 
     @pytest.mark.asyncio
