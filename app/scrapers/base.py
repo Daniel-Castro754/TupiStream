@@ -3,7 +3,7 @@ import contextvars
 import logging
 import time
 from abc import ABC, abstractmethod
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -101,6 +101,87 @@ class BaseScraper(ABC):
         if req_id:
             return f"[{req_id}] [{self.name}]"
         return f"[{self.name}]"
+
+    def _hosts_permitidos(self) -> frozenset[str]:
+        """
+        Hosts que este scraper pode acessar: o base_url e os mirrors.
+
+        Derivado da configuracao que ja existe, entao nenhum scraper precisa
+        declarar nada novo. Se o conjunto sair vazio — caso de duble de teste
+        sem base_url —, a validacao nao restringe nada: fechar aqui quebraria
+        testes sem ganho de seguranca real, porque duble nao faz rede.
+        """
+        urls = [self.base_url, *getattr(self, "_fallback_urls", [])]
+        hosts = {
+            (urlparse(u).hostname or "").lower().rstrip(".")
+            for u in urls
+            if u
+        }
+        return frozenset(h for h in hosts if h)
+
+    def _url_permitida(self, url: str) -> bool:
+        """
+        True quando a URL aponta para um host declarado pelo scraper.
+
+        Substitui a checagem `dominio in href`, que comparava SUBSTRING e por
+        isso aceitava qualquer destino que contivesse o dominio em qualquer
+        posicao:
+
+            https://evil.example/?next=apachetorrent.com     -> aceito
+            https://apachetorrent.com@169.254.169.254/       -> aceito
+            https://apachetorrent.com.evil.example/x         -> aceito
+
+        Os tres apontam para fora. O terceiro e o classico: um subdominio
+        controlado pelo atacante que termina com o dominio esperado. O
+        segundo usa userinfo para disfarcar o host real — e 169.254.169.254
+        e o endpoint de metadados de nuvem.
+
+        A comparacao passa a ser de HOSTNAME exato, com esquema e porta
+        restritos e credenciais embutidas recusadas.
+        """
+        permitidos = self._hosts_permitidos()
+        if not permitidos:
+            return True
+
+        try:
+            partes = urlparse(url)
+        except ValueError:
+            return False
+
+        if partes.scheme not in ("http", "https"):
+            return False
+        if partes.username or partes.password:
+            return False
+        try:
+            porta = partes.port
+        except ValueError:
+            return False
+        if porta not in (None, 80, 443):
+            return False
+
+        host = (partes.hostname or "").lower().rstrip(".")
+        return host in permitidos
+
+    def _resolver_link(self, href: str, url_da_pagina: str) -> str | None:
+        """
+        Transforma um href da pagina em URL absoluta validada, ou None.
+
+        `urljoin` resolve link relativo contra a pagina de origem, que e o
+        comportamento correto de um navegador. A validacao vem depois: href
+        vem de HTML de terceiro e nao e evidencia de destino seguro.
+        """
+        if not href:
+            return None
+        try:
+            absoluta = urljoin(url_da_pagina, href.strip())
+        except ValueError:
+            return None
+        if not self._url_permitida(absoluta):
+            logger.warning(
+                f"{self._log_prefix()} link recusado por host nao permitido: {absoluta[:120]}"
+            )
+            return None
+        return absoluta
 
     @staticmethod
     def _origin(url: str) -> str:
@@ -217,6 +298,22 @@ class BaseScraper(ABC):
 
         O último domínio funcional passa a ser priorizado nas buscas seguintes,
         evitando repetir timeouts conhecidos antes de chegar ao mirror saudável.
+
+        Risco residual conhecido, e por que ele fica:
+          O cliente segue redirects, e `self.base_url` passa a ser o destino
+          final — inclusive um domínio novo, não declarado. Isso é
+          DELIBERADO: sites de torrent trocam de domínio com frequência, e é
+          essa adaptação que mantém o addon funcionando sem redeploy.
+
+          A consequência é que um mirror configurado, se comprometido, pode
+          redirecionar para endereço interno. Mas as URLs iniciais vêm de
+          `_fallback_urls`, que é código, não de HTML de terceiro — o vetor
+          que esta camada realmente precisava fechar era o href extraído da
+          página, e esse está fechado em `_resolver_link`.
+
+          Fechar também o redirect exige egress firewall na infraestrutura,
+          não validação de nome na aplicação: por nome não há como distinguir
+          "mirror novo legítimo" de "mirror comprometido".
         """
         prefix = self._log_prefix()
         self.last_error = None
