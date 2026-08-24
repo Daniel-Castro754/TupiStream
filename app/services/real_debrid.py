@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 
 import httpx
 
@@ -83,6 +84,26 @@ def _path_matches_episode(path: str, season: int, episode: int) -> bool:
         ),
     )
     return any(pattern.search(normalized) for pattern in patterns)
+
+
+@dataclass
+class EstadoPlayback:
+    """
+    Progresso do fluxo Real-Debrid, para que um retry retome em vez de
+    recomecar.
+
+    `torrent_id` era variavel LOCAL de get_stream_url. Cada retry apos 503
+    ou 504 refazia o addMagnet — e o RD cria um torrent novo a cada chamada,
+    entao a conta do usuario acumulava um torrent por tentativa. E o proprio
+    503 devolve Retry-After, convidando o cliente a repetir.
+
+    Medido com 3 tentativas ate o torrent ficar pronto:
+        sem persistir  ->  3 addMagnet
+        persistindo    ->  1 addMagnet + 2 reaproveitamentos
+    """
+
+    rd_torrent_id: str | None = None
+    selected_file_id: str | None = None
 
 
 class RealDebridError(Exception):
@@ -269,6 +290,7 @@ class RealDebridService:
         type: str = "movie",
         stremio_id: str = "",
         deadline: float | None = None,
+        estado: "EstadoPlayback | None" = None,
     ) -> str:
         """
         Resolve um magnet aplicando um teto agregado ao fluxo inteiro.
@@ -283,12 +305,16 @@ class RealDebridService:
         trabalhando muito depois de o cliente ter desistido.
         """
         self._deadline = deadline
+        # Sem `estado`, cada chamada comeca do zero — comportamento identico
+        # ao anterior para quem ja chamava assim.
+        estado = estado if estado is not None else EstadoPlayback()
+
         if deadline is None:
-            return await self._resolver(magnet, type, stremio_id)
+            return await self._resolver(magnet, type, stremio_id, estado)
 
         try:
             async with asyncio.timeout_at(deadline):
-                return await self._resolver(magnet, type, stremio_id)
+                return await self._resolver(magnet, type, stremio_id, estado)
         except TimeoutError as exc:
             self._log("deadline", "orcamento de playback esgotado", level=logging.ERROR)
             raise RealDebridTimeoutError(
@@ -296,7 +322,11 @@ class RealDebridService:
             ) from exc
 
     async def _resolver(
-        self, magnet: str, type: str = "movie", stremio_id: str = ""
+        self,
+        magnet: str,
+        type: str = "movie",
+        stremio_id: str = "",
+        estado: "EstadoPlayback | None" = None,
     ) -> str:
         """
         Resolve um magnet no clique usando apenas endpoints suportados.
@@ -308,36 +338,50 @@ class RealDebridService:
           4. info para obter links
           5. unrestrict/link
         """
+        estado = estado if estado is not None else EstadoPlayback()
         stage = "addMagnet"
         try:
-            self._log("addMagnet", "enviando magnet")
-            resp_add = await self.client.post(
-                f"{self.base_url}/torrents/addMagnet",
-                data={"magnet": magnet},
-            )
-            resp_add.raise_for_status()
-            torrent_id = resp_add.json()["id"]
-            self._log("addMagnet", "torrent criado")
+            # Etapa 1 — addMagnet. Retomavel: se uma tentativa anterior ja
+            # criou o torrent, refazer isso criaria OUTRO na conta do usuario.
+            if estado.rd_torrent_id:
+                torrent_id = estado.rd_torrent_id
+                self._log("addMagnet", "reaproveitando torrent de tentativa anterior")
+            else:
+                self._log("addMagnet", "enviando magnet")
+                resp_add = await self.client.post(
+                    f"{self.base_url}/torrents/addMagnet",
+                    data={"magnet": magnet},
+                )
+                resp_add.raise_for_status()
+                torrent_id = resp_add.json()["id"]
+                estado.rd_torrent_id = torrent_id
+                self._log("addMagnet", "torrent criado")
 
-            stage = "torrents/info"
-            torrent_info = await self._get_torrent_info(
-                torrent_id,
-                "lendo arquivos do torrent",
-            )
-            selected_file_id = self._select_file_id(
-                torrent_info.get("files", []),
-                type,
-                stremio_id,
-            )
+            # Etapa 2 — escolher e selecionar o arquivo. Tambem retomavel:
+            # a selecao ja feita continua valendo no torrent do RD.
+            if estado.selected_file_id:
+                self._log("selectFiles", "arquivo ja selecionado em tentativa anterior")
+            else:
+                stage = "torrents/info"
+                torrent_info = await self._get_torrent_info(
+                    torrent_id,
+                    "lendo arquivos do torrent",
+                )
+                selected_file_id = self._select_file_id(
+                    torrent_info.get("files", []),
+                    type,
+                    stremio_id,
+                )
+                estado.selected_file_id = selected_file_id
 
-            stage = "selectFiles"
-            self._log("selectFiles", "selecionando arquivo principal")
-            resp_select = await self.client.post(
-                f"{self.base_url}/torrents/selectFiles/{torrent_id}",
-                data={"files": selected_file_id},
-            )
-            resp_select.raise_for_status()
-            self._log("selectFiles", "arquivo selecionado")
+                stage = "selectFiles"
+                self._log("selectFiles", "selecionando arquivo principal")
+                resp_select = await self.client.post(
+                    f"{self.base_url}/torrents/selectFiles/{torrent_id}",
+                    data={"files": selected_file_id},
+                )
+                resp_select.raise_for_status()
+                self._log("selectFiles", "arquivo selecionado")
 
             stage = "torrents/info.links"
             links = await self._wait_for_links(torrent_id)

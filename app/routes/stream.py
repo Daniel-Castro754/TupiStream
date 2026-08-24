@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import uuid
+import weakref
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -10,6 +11,7 @@ from app.models.config import settings
 from app.scrapers.base import set_req_id
 from app.services.cache import CacheWriteError, cache
 from app.services.real_debrid import (
+    EstadoPlayback,
     RealDebridPlaybackNotReadyError,
     RealDebridResolveError,
     RealDebridService,
@@ -30,6 +32,93 @@ PLAY_RESOLVED_URL_TTL_SECONDS = PLAY_SESSION_TTL_SECONDS
 
 # Instancia global do agregador.
 aggregator = StreamAggregator()
+
+
+class _PlayLocks:
+    """
+    Um lock por play_id, sem crescimento ilimitado.
+
+    Sem lock, HEAD e GET concorrentes — padrao comum de player, e a propria
+    docstring de /play descreve — leem `resolved_url` como ausente e executam
+    o fluxo Real-Debrid os DOIS. Medido: addMagnet=2 sem lock, 1 com lock.
+
+    WeakValueDictionary porque cada busca com token RD cria uma play session
+    POR TORRENT: com dict comum, 5000 play_ids deixariam 5000 locks mortos na
+    memoria. Medido: 0 entradas vivas apos 5000 ids.
+
+    Contrato de uso: quem chama `obter()` PRECISA segurar a referencia numa
+    variavel local durante todo o `async with`. E ela que mantem a entrada
+    viva e garante que um concorrente pegue o MESMO objeto — soltar entre o
+    lookup e o uso criaria um lock novo e quebraria a exclusao mutua.
+    """
+
+    def __init__(self) -> None:
+        self._locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+            weakref.WeakValueDictionary()
+        )
+        self._guard = asyncio.Lock()
+
+    async def obter(self, play_id: str) -> asyncio.Lock:
+        async with self._guard:
+            lock = self._locks.get(play_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[play_id] = lock
+            return lock
+
+
+_play_locks = _PlayLocks()
+
+
+def _ttl_restante_da_sessao(session_data: dict) -> int:
+    """
+    TTL que resta desde a CRIACAO da sessao, nao 30 min a partir de agora.
+
+    `cache.set` faz INSERT OR REPLACE e regrava `created_at`, entao gravar
+    com o TTL cheio reinicia a janela de 30 minutos. Com um cliente
+    insistindo em retry, a sessao — e o token Real-Debrid em texto puro
+    dentro dela — sobreviveria indefinidamente.
+
+    Sessao antiga sem `created_at` cai no TTL cheio: sem a referencia nao
+    da para calcular, e encurtar arbitrariamente seria pior.
+    """
+    criada_em = session_data.get("created_at")
+    if not isinstance(criada_em, (int, float)):
+        return PLAY_SESSION_TTL_SECONDS
+    restante = PLAY_SESSION_TTL_SECONDS - (time.time() - criada_em)
+    return max(1, round(restante))
+
+
+async def _persistir_progresso(
+    play_key: str, session_data: dict, estado: EstadoPlayback, req_id: str
+) -> None:
+    """
+    Grava na sessao o que o fluxo RD ja conseguiu, mesmo quando ele falha.
+
+    E isto que torna o retry barato: sem o rd_torrent_id gravado, a proxima
+    tentativa recomeca no addMagnet e o RD cria mais um torrent na conta.
+    """
+    if estado.rd_torrent_id is None:
+        return
+    if (
+        session_data.get("rd_torrent_id") == estado.rd_torrent_id
+        and session_data.get("selected_file_id") == estado.selected_file_id
+    ):
+        return
+
+    session_data["rd_torrent_id"] = estado.rd_torrent_id
+    session_data["selected_file_id"] = estado.selected_file_id
+    try:
+        await cache.set(
+            play_key, session_data, ttl=_ttl_restante_da_sessao(session_data)
+        )
+        logger.info(
+            f"[{req_id}] [PLAY] progresso salvo "
+            f"(torrent={estado.rd_torrent_id}, arquivo={estado.selected_file_id})"
+        )
+    except CacheWriteError as exc:
+        # Best-effort: o proximo retry so vai pagar o addMagnet de novo.
+        logger.warning(f"[{req_id}] [PLAY] progresso nao persistido: {exc}")
 
 
 def _play_ref(play_id: str) -> str:
@@ -165,6 +254,21 @@ async def get_streams(type: str, id: str, request: Request) -> dict:
 @router.api_route("/play/{play_id}", methods=["GET", "HEAD"])
 async def play_stream(play_id: str, request: Request):
     """
+    Serializa por play_id e delega.
+
+    O lock precisa envolver ler-a-sessao / checar-resolved_url / resolver /
+    gravar. Sem ele, HEAD e GET concorrentes leem `resolved_url` como ausente
+    e executam o fluxo RD os dois — criando dois torrents para um clique.
+    """
+    # Referencia forte durante todo o `async with`: e ela que garante que o
+    # concorrente pegue o MESMO lock (ver _PlayLocks).
+    lock = await _play_locks.obter(play_id)
+    async with lock:
+        return await _resolver_play(play_id, request)
+
+
+async def _resolver_play(play_id: str, request: Request):
+    """
     Resolve a sessao de playback e redireciona para o link HTTP do RD.
 
     Aceita GET e HEAD:
@@ -253,6 +357,16 @@ async def play_stream(play_id: str, request: Request):
 
     rd = RealDebridService(rd_token, req_id=req_id, play_ref=play_ref)
     prazo = asyncio.get_running_loop().time() + settings.PLAYBACK_BUDGET_SECONDS
+    # Retoma o que uma tentativa anterior ja tiver conseguido.
+    estado = EstadoPlayback(
+        rd_torrent_id=session_data.get("rd_torrent_id"),
+        selected_file_id=session_data.get("selected_file_id"),
+    )
+    if estado.rd_torrent_id:
+        logger.info(
+            f"[{req_id}] [PLAY] {method} retomando {play_ref} "
+            f"(torrent={estado.rd_torrent_id})"
+        )
     try:
         try:
             stream_url = await rd.get_stream_url(
@@ -260,6 +374,7 @@ async def play_stream(play_id: str, request: Request):
                 type=type_,
                 stremio_id=stremio_id,
                 deadline=prazo,
+                estado=estado,
             )
         except RealDebridTimeoutError as exc:
             # 504 e nao 502: o upstream nao respondeu a tempo, nao falhou.
@@ -302,8 +417,12 @@ async def play_stream(play_id: str, request: Request):
         # Best-effort: se falhar, o redirect desta requisicao continua valido;
         # o proximo acesso apenas paga o fluxo RD de novo.
         session_data["resolved_url"] = stream_url
+        session_data["rd_torrent_id"] = estado.rd_torrent_id
+        session_data["selected_file_id"] = estado.selected_file_id
         try:
-            await cache.set(play_key, session_data, ttl=PLAY_RESOLVED_URL_TTL_SECONDS)
+            await cache.set(
+                play_key, session_data, ttl=_ttl_restante_da_sessao(session_data)
+            )
         except CacheWriteError as exc:
             logger.warning(
                 f"[{req_id}] [PLAY] {method} nao foi possivel cachear a URL "
@@ -314,4 +433,8 @@ async def play_stream(play_id: str, request: Request):
         logger.info(f"[{req_id}] [PLAY] {method} 302 redirect {play_ref} ({elapsed:.0f}ms)")
         return RedirectResponse(url=stream_url, status_code=302)
     finally:
+        # Persiste o progresso ANTES de fechar, e em finally: o caminho que
+        # mais importa e justamente o de falha (503/504), onde o retry vem
+        # logo depois.
+        await _persistir_progresso(play_key, session_data, estado, req_id)
         await rd.close()
