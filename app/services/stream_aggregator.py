@@ -261,6 +261,16 @@ class StreamAggregator:
         elapsed = time.monotonic() - t_start
         return max(0.0, settings.REQUEST_BUDGET_SECONDS - elapsed)
 
+    def _budget_para_scrapers(self, t_start: float) -> float:
+        """
+        Budget restante menos a margem reservada para fechar a resposta.
+
+        Depois dos scrapers ainda e preciso ordenar, serializar os
+        StreamResult e gravar as play sessions. Sem reservar nada, os
+        scrapers podiam consumir ate o ultimo milissegundo do budget.
+        """
+        return max(0.0, self._budget_remaining(t_start) - settings.BUDGET_RESERVE_SECONDS)
+
     async def _fetch_title(
         self, imdb_id: str, type: str, req_id: str, budget: float
     ) -> tuple[str, str]:
@@ -286,8 +296,20 @@ class StreamAggregator:
 
         timeout = min(budget, MAX_BUDGET_TITLE_FETCH)
 
+        # `httpx.AsyncClient(timeout=X)` aplica X POR OPERACAO, nao ao bloco.
+        # Como as chamadas aqui sao sequenciais — 2x Cinemeta + TMDB + OMDb —
+        # o pior caso era 4 x 4,0s = 16s numa etapa documentada como tendo
+        # teto de 4s, dentro de um REQUEST_BUDGET_SECONDS de 12s. Medido:
+        # 4 chamadas travadas levavam 1,63s com teto de 0,4s cada, e 0,40s
+        # sob timeout_at. O timeout do cliente continua valendo como teto por
+        # operacao; o timeout_at e o teto agregado.
+        prazo = asyncio.get_running_loop().time() + timeout
+
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with (
+                asyncio.timeout_at(prazo),
+                httpx.AsyncClient(timeout=timeout) as client,
+            ):
                 # Cinemeta — título principal (pode vir em PT-BR)
                 # dict.fromkeys remove duplicata preservando a ordem: com
                 # type="movie" a lista era ["movie", "movie", "series"] e a
@@ -354,6 +376,14 @@ class StreamAggregator:
                     except Exception as e:
                         logger.warning(f"[{req_id}] [_fetch_title] OMDB falhou: {e}")
 
+        except TimeoutError:
+            # Parcial sobrevive: o `return` fica FORA do bloco e as variaveis
+            # ja atribuidas permanecem. Se o Cinemeta respondeu antes de o
+            # OMDb travar, o titulo dele chega ao chamador.
+            logger.warning(
+                f"[{req_id}] [_fetch_title] deadline de {timeout:.1f}s esgotado "
+                f"— seguindo com original={titulo_original!r}"
+            )
         except Exception as e:
             logger.warning(f"[{req_id}] [_fetch_title] Erro ({timeout:.1f}s timeout): {e}")
             titulo_ptbr = titulo_original
@@ -421,8 +451,33 @@ class StreamAggregator:
                 imdb_id, type, req_id, remaining
             )
 
+            # Quando o lookup de metadados falha — timeout, rede, 4xx —
+            # _fetch_title devolve o proprio imdb_id como "titulo". Os
+            # scrapers textuais entao buscam por "tt0816692", nao acham nada
+            # e respondem BEM: contam como ok_sources, o ScrapeOutcome fica
+            # "confiavel" e o vazio ia para o cache negativo como se o
+            # conteudo nao existisse.
+            #
+            # Nao existe: existe uma busca feita com a query errada. O
+            # deadline desta PR torna esse caminho MAIS frequente (antes a
+            # etapa podia gastar 16s e ter sucesso; agora e cortada em 4s),
+            # e e por isso que a correcao vem junto.
+            #
+            # YTS e Brazuca ignoram o texto e buscam por imdb_id, entao um
+            # resultado POSITIVO segue valido e cacheavel — o bloqueio vale
+            # so para o vazio.
+            # OU, nao E: basta um dos dois ter resolvido para a query usada
+            # pelos scrapers fazer sentido. _run_scrapers recebe titulo_ptbr
+            # na primeira rodada e titulo_original na segunda.
+            titulo_resolvido = titulo_original != imdb_id or titulo_ptbr != imdb_id
+            if not titulo_resolvido:
+                logger.warning(
+                    f"[{req_id}] Titulo nao resolvido — buscando pelo imdb_id. "
+                    "Vazio resultante nao sera cacheado."
+                )
+
             # Primeira rodada (PT-BR)
-            remaining = self._budget_remaining(t_start)
+            remaining = self._budget_para_scrapers(t_start)
             if remaining > MIN_BUDGET_SCRAPERS:
                 resultado = await self._run_scrapers(
                     titulo_ptbr, imdb_id, type, req_id, "ptbr", remaining,
@@ -433,7 +488,7 @@ class StreamAggregator:
                 resultado = ScrapeOutcome(ran=False)
 
             # Segunda rodada (título original) — só se necessário e viável
-            remaining = self._budget_remaining(t_start)
+            remaining = self._budget_para_scrapers(t_start)
             if (
                 len(resultado.torrents) < 3
                 and titulo_original != titulo_ptbr
@@ -456,7 +511,10 @@ class StreamAggregator:
                 )
 
             torrent_results = resultado.torrents
-            await self._cachear_busca(cache_key, resultado, req_id)
+            await self._cachear_busca(
+                cache_key, resultado, req_id,
+                permitir_cache_negativo=titulo_resolvido,
+            )
 
         # Ordena os torrents uma vez. No modo híbrido, cada torrent elegível
         # pode gerar duas opções: uma via RD e outra via P2P.
@@ -712,7 +770,12 @@ class StreamAggregator:
             return False
 
     async def _cachear_busca(
-        self, cache_key: str, resultado: ScrapeOutcome, req_id: str
+        self,
+        cache_key: str,
+        resultado: ScrapeOutcome,
+        req_id: str,
+        *,
+        permitir_cache_negativo: bool = True,
     ) -> None:
         """
         Decide se — e por quanto tempo — o resultado da busca vai para o cache.
@@ -728,6 +791,14 @@ class StreamAggregator:
         if resultado.torrents:
             if await self._gravar_best_effort(cache_key, payload, None, req_id):
                 logger.info(f"[{req_id}] [CACHE SET] {cache_key} → {len(payload)} torrents")
+            return
+
+        if resultado.confiavel and not permitir_cache_negativo:
+            logger.warning(
+                f"[{req_id}] [CACHE SKIP] {cache_key} -> vazio, mas a busca foi "
+                "feita pelo imdb_id porque o titulo nao resolveu. Isso nao prova "
+                "ausencia de conteudo — nao cacheado."
+            )
             return
 
         if resultado.confiavel:

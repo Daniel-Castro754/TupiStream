@@ -25,6 +25,10 @@ VIDEO_FILE_EXTENSIONS = (
 )
 INVALID_PATH_WORDS = ("sample", "trailer", "extras")
 
+# Folga minima para valer a pena iniciar mais uma consulta ao RD. Comecar uma
+# chamada de 15s faltando 2s de orcamento so joga fora o trabalho ja feito.
+MARGEM_PARA_NOVA_CONSULTA_SECONDS = 1.0
+
 _EPISODE_MARKER_PATTERNS = (
     re.compile(r"(?<![a-z0-9])s\d{1,2}e\d{1,3}(?!\d)", re.IGNORECASE),
     re.compile(r"(?<!\d)\d{1,2}x\d{1,3}(?!\d)", re.IGNORECASE),
@@ -93,6 +97,16 @@ class RealDebridResolveError(RealDebridError):
     """Falha operacional ao resolver um link via Real-Debrid."""
 
 
+class RealDebridTimeoutError(RealDebridError):
+    """
+    O deadline do playback estourou antes de o fluxo terminar.
+
+    Separada de RealDebridResolveError de proposito: "o upstream demorou
+    demais" e "o upstream falhou" pedem codigos HTTP diferentes (504 x 502)
+    e acoes diferentes de quem consome.
+    """
+
+
 class RealDebridService:
     """Cliente para a API do Real-Debrid."""
 
@@ -107,6 +121,7 @@ class RealDebridService:
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=15.0,
         )
+        self._deadline: float | None = None
         prefix = []
         if req_id:
             prefix.append(f"[{req_id}]")
@@ -124,6 +139,21 @@ class RealDebridService:
         resp_info = await self.client.get(f"{self.base_url}/torrents/info/{torrent_id}")
         resp_info.raise_for_status()
         return resp_info.json()
+
+    def _ha_orcamento_para_nova_consulta(self, espera: float) -> bool:
+        """
+        Sobra tempo para dormir `espera` e ainda fazer outra consulta?
+
+        Sem esta checagem, `_wait_for_links` decidia continuar olhando so o
+        contador de tentativas. A terceira consulta de 15s podia comecar
+        faltando 2s de orcamento — o deadline cortava no meio e o trabalho
+        ja feito (addMagnet, selectFiles) ia junto, sem nem uma resposta
+        util para o cliente.
+        """
+        if self._deadline is None:
+            return True
+        restante = self._deadline - asyncio.get_running_loop().time()
+        return restante > espera + MARGEM_PARA_NOVA_CONSULTA_SECONDS
 
     async def _wait_for_links(self, torrent_id: str) -> list[str]:
         """
@@ -148,6 +178,16 @@ class RealDebridService:
             status = torrent_info.get("status", "desconhecido")
             if attempt < total_attempts:
                 delay = LINK_READY_RETRY_DELAYS[attempt - 1]
+                if not self._ha_orcamento_para_nova_consulta(delay):
+                    self._log(
+                        "info",
+                        f"sem orcamento para nova consulta (status={status})",
+                        level=logging.WARNING,
+                    )
+                    raise RealDebridPlaybackNotReadyError(
+                        "Torrent temporariamente indisponivel no Real-Debrid. "
+                        "Tente novamente em instantes."
+                    )
                 self._log(
                     "info",
                     f"sem links ainda (status={status}), retry em {delay:.2f}s",
@@ -224,6 +264,38 @@ class RealDebridService:
         )
 
     async def get_stream_url(
+        self,
+        magnet: str,
+        type: str = "movie",
+        stremio_id: str = "",
+        deadline: float | None = None,
+    ) -> str:
+        """
+        Resolve um magnet aplicando um teto agregado ao fluxo inteiro.
+
+        `deadline` e um instante absoluto no relogio do event loop. Com None
+        o comportamento e identico ao anterior — sem teto — para nao mudar
+        nada em quem ja chamava assim.
+
+        Por que existe: o fluxo sao ate 7 chamadas sequenciais de 15s cada,
+        mais 1,5s de sleep entre retries. Pior caso 106,5s, sem nenhum limite
+        agregado, enquanto o Stremio corta em ~20s. O servidor seguia
+        trabalhando muito depois de o cliente ter desistido.
+        """
+        self._deadline = deadline
+        if deadline is None:
+            return await self._resolver(magnet, type, stremio_id)
+
+        try:
+            async with asyncio.timeout_at(deadline):
+                return await self._resolver(magnet, type, stremio_id)
+        except TimeoutError as exc:
+            self._log("deadline", "orcamento de playback esgotado", level=logging.ERROR)
+            raise RealDebridTimeoutError(
+                "Tempo esgotado ao resolver o playback via Real-Debrid"
+            ) from exc
+
+    async def _resolver(
         self, magnet: str, type: str = "movie", stremio_id: str = ""
     ) -> str:
         """
