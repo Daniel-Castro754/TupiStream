@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app.scrapers.base import set_req_id
-from app.services.cache import cache
+from app.services.cache import CacheWriteError, cache
 from app.services.real_debrid import (
     RealDebridPlaybackNotReadyError,
     RealDebridResolveError,
@@ -273,9 +273,17 @@ async def play_stream(play_id: str, request: Request):
             )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        # Guarda URL resolvida na session para reuso (HEAD+GET, retries)
+        # Guarda URL resolvida na session para reuso (HEAD+GET, retries).
+        # Best-effort: se falhar, o redirect desta requisicao continua valido;
+        # o proximo acesso apenas paga o fluxo RD de novo.
         session_data["resolved_url"] = stream_url
-        await cache.set(play_key, session_data, ttl=PLAY_RESOLVED_URL_TTL_SECONDS)
+        try:
+            await cache.set(play_key, session_data, ttl=PLAY_RESOLVED_URL_TTL_SECONDS)
+        except CacheWriteError as exc:
+            logger.warning(
+                f"[{req_id}] [PLAY] {method} nao foi possivel cachear a URL "
+                f"resolvida de {play_ref}: {exc}"
+            )
 
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(f"[{req_id}] [PLAY] {method} 302 redirect {play_ref} ({elapsed:.0f}ms)")

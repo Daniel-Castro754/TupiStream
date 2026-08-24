@@ -17,7 +17,7 @@ from app.scrapers.rutracker import RuTrackerScraper
 from app.scrapers.torrent_1337x import Torrent1337xScraper
 from app.scrapers.torrent_galaxy import TorrentGalaxyScraper
 from app.scrapers.yts import YTSScraper
-from app.services.cache import cache
+from app.services.cache import CacheWriteError, cache
 from app.services.labeler import build_stream_name, build_stream_title
 
 logger = logging.getLogger(__name__)
@@ -468,6 +468,9 @@ class StreamAggregator:
         play_sessions_count = 0
 
         for torrent in torrents_ordenados:
+            sessao_gravada = False
+            play_id = ""
+
             if rd_token and torrent.magnet:
                 play_id = str(uuid.uuid4())
                 session_data = {
@@ -481,12 +484,24 @@ class StreamAggregator:
                     "created_at": time.time(),
                     "play_session_ttl": PLAY_SESSION_TTL_SECONDS,
                 }
-                await cache.set(
-                    f"play:{play_id}",
-                    session_data,
-                    ttl=PLAY_SESSION_TTL_SECONDS,
-                )
+                try:
+                    await cache.set(
+                        f"play:{play_id}",
+                        session_data,
+                        ttl=PLAY_SESSION_TTL_SECONDS,
+                    )
+                    sessao_gravada = True
+                except CacheWriteError as exc:
+                    # Escrita obrigatória: sem a sessão no cache, /play
+                    # devolveria 404 no clique. Oferecer o link seria pior
+                    # que não oferecer — cai no fallback P2P abaixo.
+                    logger.error(
+                        f"[{req_id}] [PLAY SESSION] falha ao gravar "
+                        f"{play_id[:8]}: {exc} — stream RD omitido para "
+                        f"'{torrent.title[:40]}'"
+                    )
 
+            if sessao_gravada:
                 base = request_base_url or settings.BASE_URL
                 rd_streams.append(
                     self._formatar_stream(
@@ -673,6 +688,29 @@ class StreamAggregator:
             skipped_sources=pulados,
         )
 
+    async def _gravar_best_effort(
+        self, chave: str, payload: list, ttl: int | None, req_id: str
+    ) -> bool:
+        """
+        Grava no cache tolerando falha.
+
+        O cache de busca é best-effort: se a escrita falhar, a resposta desta
+        requisição continua correta — só não vai ser reaproveitada. Bem
+        diferente da play session, onde a escrita é obrigatória.
+        """
+        try:
+            if ttl is None:
+                await cache.set(chave, payload)
+            else:
+                await cache.set(chave, payload, ttl=ttl)
+            return True
+        except CacheWriteError as exc:
+            logger.warning(
+                f"[{req_id}] [CACHE] resultado de {chave} não foi gravado ({exc}) "
+                "— a resposta desta requisição não é afetada"
+            )
+            return False
+
     async def _cachear_busca(
         self, cache_key: str, resultado: ScrapeOutcome, req_id: str
     ) -> None:
@@ -688,17 +726,17 @@ class StreamAggregator:
         payload = [t.model_dump() for t in resultado.torrents]
 
         if resultado.torrents:
-            await cache.set(cache_key, payload)
-            logger.info(f"[{req_id}] [CACHE SET] {cache_key} → {len(payload)} torrents")
+            if await self._gravar_best_effort(cache_key, payload, None, req_id):
+                logger.info(f"[{req_id}] [CACHE SET] {cache_key} → {len(payload)} torrents")
             return
 
         if resultado.confiavel:
             ttl = settings.NEGATIVE_CACHE_TTL_SECONDS
-            await cache.set(cache_key, payload, ttl=ttl)
-            logger.info(
-                f"[{req_id}] [CACHE SET] {cache_key} → vazio confirmado por "
-                f"{resultado.ok_sources} fonte(s), TTL curto de {ttl}s"
-            )
+            if await self._gravar_best_effort(cache_key, payload, ttl, req_id):
+                logger.info(
+                    f"[{req_id}] [CACHE SET] {cache_key} → vazio confirmado por "
+                    f"{resultado.ok_sources} fonte(s), TTL curto de {ttl}s"
+                )
             return
 
         logger.warning(
