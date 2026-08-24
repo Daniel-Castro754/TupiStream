@@ -451,6 +451,28 @@ class StreamAggregator:
                 imdb_id, type, req_id, remaining
             )
 
+            # Quando o lookup de metadados falha — timeout, rede, 4xx —
+            # _fetch_title devolve o proprio imdb_id como "titulo". Os
+            # scrapers textuais entao buscam por "tt0816692", nao acham nada
+            # e respondem BEM: contam como ok_sources, o ScrapeOutcome fica
+            # "confiavel" e o vazio ia para o cache negativo como se o
+            # conteudo nao existisse.
+            #
+            # Nao existe: existe uma busca feita com a query errada. O
+            # deadline desta PR torna esse caminho MAIS frequente (antes a
+            # etapa podia gastar 16s e ter sucesso; agora e cortada em 4s),
+            # e e por isso que a correcao vem junto.
+            #
+            # YTS e Brazuca ignoram o texto e buscam por imdb_id, entao um
+            # resultado POSITIVO segue valido e cacheavel — o bloqueio vale
+            # so para o vazio.
+            titulo_resolvido = imdb_id not in (titulo_original, titulo_ptbr)
+            if not titulo_resolvido:
+                logger.warning(
+                    f"[{req_id}] Titulo nao resolvido — buscando pelo imdb_id. "
+                    "Vazio resultante nao sera cacheado."
+                )
+
             # Primeira rodada (PT-BR)
             remaining = self._budget_para_scrapers(t_start)
             if remaining > MIN_BUDGET_SCRAPERS:
@@ -486,7 +508,10 @@ class StreamAggregator:
                 )
 
             torrent_results = resultado.torrents
-            await self._cachear_busca(cache_key, resultado, req_id)
+            await self._cachear_busca(
+                cache_key, resultado, req_id,
+                permitir_cache_negativo=titulo_resolvido,
+            )
 
         # Ordena os torrents uma vez. No modo híbrido, cada torrent elegível
         # pode gerar duas opções: uma via RD e outra via P2P.
@@ -742,7 +767,12 @@ class StreamAggregator:
             return False
 
     async def _cachear_busca(
-        self, cache_key: str, resultado: ScrapeOutcome, req_id: str
+        self,
+        cache_key: str,
+        resultado: ScrapeOutcome,
+        req_id: str,
+        *,
+        permitir_cache_negativo: bool = True,
     ) -> None:
         """
         Decide se — e por quanto tempo — o resultado da busca vai para o cache.
@@ -758,6 +788,14 @@ class StreamAggregator:
         if resultado.torrents:
             if await self._gravar_best_effort(cache_key, payload, None, req_id):
                 logger.info(f"[{req_id}] [CACHE SET] {cache_key} → {len(payload)} torrents")
+            return
+
+        if resultado.confiavel and not permitir_cache_negativo:
+            logger.warning(
+                f"[{req_id}] [CACHE SKIP] {cache_key} -> vazio, mas a busca foi "
+                "feita pelo imdb_id porque o titulo nao resolveu. Isso nao prova "
+                "ausencia de conteudo — nao cacheado."
+            )
             return
 
         if resultado.confiavel:

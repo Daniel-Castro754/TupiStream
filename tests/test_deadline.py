@@ -249,3 +249,94 @@ class TestWaitForLinksRespeitaOrcamento:
         # Uma consulta feita; a segunda nao chegou a comecar.
         assert service.client.get.await_count == 1
         await service.close()
+
+
+class TestFallbackDeTituloNaoEnvenenaOCache:
+    """
+    Interação entre o deadline desta PR e o negative cache da #16.
+
+    Quando `_fetch_title` falha, ela devolve o próprio `imdb_id` como título.
+    Os scrapers textuais então buscam por `"tt0816692"`, não acham nada e
+    respondem **bem** — contam como `ok_sources`, o `ScrapeOutcome` fica
+    `confiavel` e o vazio ia para o cache negativo como se o conteúdo não
+    existisse.
+
+    Não existe: existe uma busca feita com a query errada. E o deadline torna
+    esse caminho mais frequente, não menos.
+    """
+
+    @staticmethod
+    async def _rodar(titulos):
+        from app.services.stream_aggregator import ScrapeOutcome
+
+        agg = _aggregator()
+        mock_cache = AsyncMock()
+        mock_cache.get.return_value = None
+
+        with patch("app.services.stream_aggregator.cache", mock_cache):
+            with patch.object(agg, "_fetch_title", return_value=titulos):
+                with patch.object(
+                    agg, "_run_scrapers",
+                    return_value=ScrapeOutcome(torrents=[], ok_sources=3),
+                ):
+                    await agg.get_streams(imdb_id="tt0816692", type="movie", req_id="r1")
+
+        return [
+            c for c in mock_cache.set.await_args_list
+            if c.args and str(c.args[0]).startswith("streams:")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fallback_de_titulo_nao_cacheia_vazio(self):
+        gravacoes = await self._rodar(("tt0816692", "tt0816692"))
+        assert gravacoes == [], (
+            "vazio com titulo nao resolvido nao pode ser cacheado como "
+            "'conteudo nao existe'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_titulo_resolvido_mantem_o_negative_cache(self):
+        """A correção não pode desligar o negative cache do caso normal."""
+        gravacoes = await self._rodar(("Interstellar", "Interestelar"))
+        assert len(gravacoes) == 1
+        assert gravacoes[0].kwargs["ttl"] == settings.NEGATIVE_CACHE_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_titulo_parcial_ja_conta_como_resolvido(self):
+        """Basta um dos dois títulos ter resolvido."""
+        gravacoes = await self._rodar(("Interstellar", "tt0816692"))
+        assert len(gravacoes) == 1
+
+    @pytest.mark.asyncio
+    async def test_resultado_POSITIVO_continua_cacheavel_sem_titulo(self):
+        """
+        YTS e Brazuca têm USES_TEXT_QUERY=False e buscam por imdb_id — podem
+        achar conteúdo mesmo com o título não resolvido. O bloqueio vale só
+        para o vazio.
+        """
+        from app.models.torrent import TorrentResult
+        from app.services.stream_aggregator import ScrapeOutcome
+
+        agg = _aggregator()
+        mock_cache = AsyncMock()
+        mock_cache.get.return_value = None
+        torrent = TorrentResult(
+            title="Filme 1080p", info_hash="a" * 40,
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            quality="1080p", dubbed=False, source="YTS",
+        )
+
+        with patch("app.services.stream_aggregator.cache", mock_cache):
+            with patch.object(agg, "_fetch_title", return_value=("tt0816692", "tt0816692")):
+                with patch.object(
+                    agg, "_run_scrapers",
+                    return_value=ScrapeOutcome(torrents=[torrent], ok_sources=1),
+                ):
+                    streams = await agg.get_streams(
+                        imdb_id="tt0816692", type="movie", req_id="r1"
+                    )
+
+        assert len(streams) == 1
+        gravacoes = [c for c in mock_cache.set.await_args_list
+                     if c.args and str(c.args[0]).startswith("streams:")]
+        assert len(gravacoes) == 1, "resultado positivo tem de ser cacheado"
