@@ -35,6 +35,25 @@ from app.models.config import settings
 logger = logging.getLogger(__name__)
 
 
+class CacheError(RuntimeError):
+    """Erro base do backend de cache."""
+
+
+class CacheWriteError(CacheError):
+    """
+    Falha ao gravar no cache.
+
+    Antes, `set()` capturava a excecao, registrava um warning e retornava
+    como se tivesse funcionado. Quem chamava nao tinha como saber. No caso
+    das play sessions isso era grave: o agregador seguia entregando ao
+    Stremio URLs /play/{id} cujas sessoes nunca foram gravadas, e cada
+    clique dava 404.
+
+    Levantar deixa a decisao com quem chama, que e quem sabe se aquela
+    escrita e obrigatoria (play session) ou best-effort (cache de torrents).
+    """
+
+
 class CacheBackend(ABC):
     """Interface comum para armazenamento de cache e play sessions."""
 
@@ -96,6 +115,26 @@ class SQLiteCacheBackend(CacheBackend):
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
+
+        # WAL: o journal padrao ("delete") faz um fsync a cada commit. Medido
+        # com o padrao real de escrita do addon — 40 play sessions numa unica
+        # requisicao /stream, uma conexao, commits sequenciais:
+        #
+        #     journal=delete            114,4 ms
+        #     WAL + synchronous=NORMAL    1,7 ms     (67x)
+        #
+        # Verificado tambem que WAL sobrevive a crash de processo: matando o
+        # processo sem commit nem close, as linhas ja commitadas continuam
+        # presentes, as nao commitadas sao descartadas e o integrity_check
+        # passa. Os arquivos -wal e -shm sao parte normal da operacao.
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA synchronous=NORMAL")
+
+        # Sem busy_timeout, uma escrita que encontra o banco travado falha na
+        # hora com "database is locked" em vez de esperar. Verificado: com
+        # timeout=0 o escritor concorrente falha; com 5000 ms, conclui.
+        await self._db.execute("PRAGMA busy_timeout=5000")
+
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS stream_cache (
                 key TEXT PRIMARY KEY,
@@ -183,8 +222,9 @@ class SQLiteCacheBackend(CacheBackend):
         return data, "hit"
 
     async def set(self, key: str, value: list | dict, ttl: int | None = None) -> None:
+        """Grava no cache. Levanta CacheWriteError se a escrita falhar."""
         if not self._db:
-            return
+            raise CacheWriteError("backend de cache nao inicializado")
 
         # `ttl or settings.CACHE_TTL` trataria um ttl=0 explícito como falsy e
         # silenciosamente usaria o default — por isso o teste explícito aqui.
@@ -200,8 +240,8 @@ class SQLiteCacheBackend(CacheBackend):
             await self._db.commit()
         except Exception as e:
             elapsed = (time.monotonic() - t0) * 1000
-            logger.warning(f"[CACHE] Lock/contenção detectada em SET ({elapsed:.0f}ms): {e}")
-            return
+            logger.error(f"[CACHE] Falha ao gravar {key} ({elapsed:.0f}ms): {e}")
+            raise CacheWriteError(f"falha ao gravar {key}: {e}") from e
 
         elapsed = (time.monotonic() - t0) * 1000
         if elapsed > 50:

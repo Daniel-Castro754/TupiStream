@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # que uma lista de torrents encontrada.
     NEGATIVE_CACHE_TTL_SECONDS: int = 300
     CACHE_DB_PATH: str = "data/cache.db"
+    # Intervalo da limpeza periodica de entradas expiradas. O TTL e logico:
+    # sem isto, uma entrada so era removida quando alguem tentava le-la, ou
+    # no shutdown.
+    CACHE_CLEANUP_INTERVAL_SECONDS: int = 300
     STORAGE_BACKEND: str = "sqlite"          # "sqlite" | "redis"
     REDIS_URL: str = "redis://localhost:6379"
 

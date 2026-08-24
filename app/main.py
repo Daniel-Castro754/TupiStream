@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -21,11 +23,32 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _limpeza_periodica_do_cache() -> None:
+    """
+    Remove entradas expiradas em background.
+
+    O TTL do cache é lógico: uma entrada expirada só era apagada quando
+    alguém tentava lê-la, ou no shutdown. Play session criada e nunca
+    clicada — o caso comum, já que cada busca cria uma por torrent e o
+    usuário clica em uma — ficava no arquivo até o próximo desligamento
+    gracioso. Se o processo morresse antes, ficava para sempre.
+    """
+    while True:
+        await asyncio.sleep(settings.CACHE_CLEANUP_INTERVAL_SECONDS)
+        try:
+            await cache.delete_expired()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[JANITOR] Falha na limpeza periódica: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await cache.init()
     await aggregator.restore_health_from_cache()
+    janitor = asyncio.create_task(_limpeza_periodica_do_cache())
     logger.info("=" * 50)
     logger.info("🇧🇷 BR Streams iniciado!")
     logger.info(f"📺 Configuração: {settings.BASE_URL}/configure")
@@ -33,16 +56,29 @@ async def lifespan(app: FastAPI):
     logger.info(f"💾 Storage backend: {settings.STORAGE_BACKEND}")
     logger.info(f"⏱  Scraper timeout: {settings.SCRAPER_TIMEOUT_SECONDS}s")
     logger.info("=" * 50)
-    yield
-    # Shutdown
-    # aggregator.close() fecha o httpx.AsyncClient de cada scraper ativo.
-    # Existia desde sempre e nunca era chamado: os clientes ficavam abertos
-    # ate o processo morrer, vazando sockets a cada restart do container.
-    # Vem antes do cache porque os scrapers nao dependem dele no shutdown.
-    await aggregator.close()
-    await cache.delete_expired()
-    await cache.close()
-    logger.info("Agregador e cache fechados.")
+    try:
+        yield
+    finally:
+        # Shutdown em `finally`, e cada recurso isolado: antes, uma falha ao
+        # fechar o agregador impediria o fechamento do cache.
+        #
+        # aggregator.close() fecha o httpx.AsyncClient de cada scraper ativo.
+        # Vem antes do cache porque os scrapers nao dependem dele aqui.
+        janitor.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await janitor
+
+        for rotulo, fechar in (
+            ("aggregator.close", aggregator.close),
+            ("cache.delete_expired", cache.delete_expired),
+            ("cache.close", cache.close),
+        ):
+            try:
+                await fechar()
+            except Exception as e:
+                logger.error(f"Falha em {rotulo} durante o shutdown: {e}")
+
+        logger.info("Agregador e cache fechados.")
 
 
 # Cria a aplicação FastAPI
