@@ -466,7 +466,10 @@ class StreamAggregator:
             # YTS e Brazuca ignoram o texto e buscam por imdb_id, entao um
             # resultado POSITIVO segue valido e cacheavel — o bloqueio vale
             # so para o vazio.
-            titulo_resolvido = imdb_id not in (titulo_original, titulo_ptbr)
+            # OU, nao E: basta um dos dois ter resolvido para a query usada
+            # pelos scrapers fazer sentido. _run_scrapers recebe titulo_ptbr
+            # na primeira rodada e titulo_original na segunda.
+            titulo_resolvido = titulo_original != imdb_id or titulo_ptbr != imdb_id
             if not titulo_resolvido:
                 logger.warning(
                     f"[{req_id}] Titulo nao resolvido — buscando pelo imdb_id. "
