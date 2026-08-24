@@ -156,7 +156,12 @@ class TestCircuitBreaker:
             "Query", "tt0000000", "movie", "req", "ptbr", budget=5.0
         )
 
-        assert resultado == []
+        assert resultado.torrents == []
+        # Nenhuma fonte chegou a rodar: o vazio nao e informacao confiavel e
+        # nao pode ser cacheado como "esse conteudo nao existe".
+        assert resultado.ran is False
+        assert resultado.confiavel is False
+        assert resultado.skipped_sources == 1
         fonte.search.assert_not_called()
 
     @pytest.mark.asyncio

@@ -5,7 +5,7 @@ import pytest
 from app.routes.stream import _parse_stremio_id
 from app.scrapers.brazuca_addon import BrazucaAddonScraper
 from app.scrapers.relevance import build_series_queries, matches_episode
-from app.services.stream_aggregator import StreamAggregator
+from app.services.stream_aggregator import ScrapeOutcome, StreamAggregator
 
 
 class TestParseStremioId:
@@ -126,7 +126,7 @@ class TestCacheKeyIsoladoPorEpisodio:
                 aggregator, "_fetch_title", new=AsyncMock(return_value=("Show", "Show"))
             ):
                 with patch.object(
-                    aggregator, "_run_scrapers", new=AsyncMock(return_value=[])
+                    aggregator, "_run_scrapers", new=AsyncMock(return_value=ScrapeOutcome())
                 ):
                     await aggregator.get_streams(
                         imdb_id="tt1234567", type="series", req_id="ep05",

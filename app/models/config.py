@@ -12,6 +12,10 @@ class Settings(BaseSettings):
 
     # ── Cache / Storage ──
     CACHE_TTL: int = 3600
+    # TTL curto para "busquei e realmente nao achei nada". Separado do
+    # CACHE_TTL porque ausencia de resultado envelhece muito mais rapido
+    # que uma lista de torrents encontrada.
+    NEGATIVE_CACHE_TTL_SECONDS: int = 300
     CACHE_DB_PATH: str = "data/cache.db"
     STORAGE_BACKEND: str = "sqlite"          # "sqlite" | "redis"
     REDIS_URL: str = "redis://localhost:6379"
