@@ -71,12 +71,20 @@ class TestPaginaDeConfiguracao:
 
 
 class TestReadmeNaoMenteMais:
-    def test_nao_afirma_que_o_servidor_nao_guarda_token(self):
+    def test_nao_afirma_mais_que_o_servidor_nao_guarda_token(self):
+        """
+        A asserção precisa mirar a AFIRMAÇÃO, não a frase.
+
+        A primeira versão deste teste procurava `"não armazena tokens"` em
+        qualquer lugar do README — e falhou, porque o texto novo **cita** a
+        frase antiga para explicar que ela estava errada. Procurar a sentença
+        completa distingue a afirmação da citação dela.
+        """
         import pathlib
 
         readme = pathlib.Path(__file__).resolve().parents[1] / "README.md"
         texto = readme.read_text(encoding="utf-8")
-        assert "não armazena tokens" not in texto, (
+        assert "não armazena tokens, tudo passa pela URL" not in texto, (
             "o servidor guarda o token nas play sessions por ate 30 minutos"
         )
 
