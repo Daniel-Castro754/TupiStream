@@ -31,7 +31,15 @@ class TestSQLiteCacheBackendBasico:
         with patch("app.services.cache.aiosqlite.connect", AsyncMock(return_value=mock_db)):
             await backend.init()
 
-        mock_db.execute.assert_awaited_once()
+        # init() executa os PRAGMA (journal_mode=WAL, synchronous=NORMAL,
+        # busy_timeout) antes do CREATE TABLE — por isso a contagem de
+        # execute() nao e mais 1. O que importa e que os tres pragmas e a
+        # criacao da tabela aconteceram.
+        comandos = [chamada.args[0] for chamada in mock_db.execute.await_args_list]
+        assert any("journal_mode=WAL" in c for c in comandos)
+        assert any("synchronous=NORMAL" in c for c in comandos)
+        assert any("busy_timeout" in c for c in comandos)
+        assert any("CREATE TABLE IF NOT EXISTS stream_cache" in c for c in comandos)
         mock_db.commit.assert_awaited_once()
         await backend.close()
 

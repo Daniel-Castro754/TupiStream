@@ -72,20 +72,29 @@ class TestPragmasDeAbertura:
 class TestEscritaFalhaAlto:
     @pytest.mark.asyncio
     async def test_set_levanta_cache_write_error(self, tmp_path):
+        """Falha de escrita REAL precisa chegar ao chamador."""
         backend = SQLiteCacheBackend(db_path=str(tmp_path / "c.db"))
         await backend.init()
+        execute_real = backend._db.execute
         try:
             backend._db.execute = AsyncMock(side_effect=RuntimeError("disco cheio"))
             with pytest.raises(CacheWriteError):
                 await backend.set("k", {"a": 1}, ttl=60)
         finally:
-            backend._db = None
+            # Restaura antes de fechar: sem isso a conexao real fica aberta e
+            # a thread do aiosqlite reclama de "Event loop is closed".
+            backend._db.execute = execute_real
+            await backend.close()
 
     @pytest.mark.asyncio
-    async def test_set_sem_backend_inicializado_levanta(self):
+    async def test_set_sem_init_continua_no_op(self):
+        """
+        `_db is None` e ciclo de vida, nao falha de escrita — segue no-op,
+        igual a get/delete/close. TestSQLiteCacheBackendSemInit documenta
+        esse contrato e ele nao muda aqui.
+        """
         backend = SQLiteCacheBackend(db_path="ignorado.db")
-        with pytest.raises(CacheWriteError):
-            await backend.set("k", {"a": 1})
+        await backend.set("k", {"a": 1})  # nao deve levantar
 
     def test_cache_write_error_e_um_cache_error(self):
         assert issubclass(CacheWriteError, CacheError)

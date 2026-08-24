@@ -222,9 +222,20 @@ class SQLiteCacheBackend(CacheBackend):
         return data, "hit"
 
     async def set(self, key: str, value: list | dict, ttl: int | None = None) -> None:
-        """Grava no cache. Levanta CacheWriteError se a escrita falhar."""
+        """
+        Grava no cache. Levanta CacheWriteError se a ESCRITA falhar.
+
+        `_db is None` (init() nunca chamado) segue sendo no-op silencioso,
+        como no resto da interface — get, delete, delete_expired e close
+        fazem o mesmo, e a classe TestSQLiteCacheBackendSemInit documenta
+        isso como contrato. É questão de ciclo de vida, não falha de escrita.
+
+        Na aplicação esse estado é inalcançável: init() roda no startup do
+        lifespan e, se falhar, o processo não sobe. O bug que esta mudança
+        corrige é outro — a exceção de escrita real sendo engolida.
+        """
         if not self._db:
-            raise CacheWriteError("backend de cache nao inicializado")
+            return
 
         # `ttl or settings.CACHE_TTL` trataria um ttl=0 explícito como falsy e
         # silenciosamente usaria o default — por isso o teste explícito aqui.
