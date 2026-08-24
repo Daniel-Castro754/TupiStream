@@ -75,9 +75,13 @@ class HDRTorrentScraper(BaseScraper):
         # Extrai links dos posts (padrão WordPress)
         links_posts: list[str] = []
         for tag in soup.select("article a, .post a, h2 a, h3 a"):
-            href = tag.get("href", "")
-            if href and href.startswith("http") and href not in links_posts:
-                links_posts.append(href)
+            # `href.startswith("http")` nao e validacao: aceitava localhost,
+            # IP privado e o endpoint de metadados de nuvem. _resolver_link
+            # resolve link relativo contra a pagina e confere o hostname
+            # contra os mirrors declarados.
+            link = self._resolver_link(tag.get("href", ""), str(response.url))
+            if link and link not in links_posts:
+                links_posts.append(link)
 
         if not links_posts:
             return resultados

@@ -292,6 +292,31 @@ class BaseScraper(ABC):
 
         return None
 
+    def _pode_adotar_origem(self, url_pedida: str, url_final: str) -> bool:
+        """
+        A origem final pode virar o novo `base_url` deste scraper?
+
+        Isto importa mais do que parece: o scraper e um SINGLETON criado no
+        startup. Adotar uma origem nao contamina uma requisicao — contamina
+        o scraper pelo resto da vida do processo, e `_prioritize_fallback_urls`
+        passa a PREFERIR essa origem em todas as buscas seguintes.
+
+        Adotar e seguro em dois casos:
+          - nao houve troca de host, ou seja, a origem veio da propria lista
+            de mirrors, que e codigo e nao HTML de terceiro;
+          - o host final esta declarado nos mirrors.
+
+        Um redirect que CRUZA para host nao declarado continua sendo seguido
+        e usado nesta requisicao — a adaptacao a mirror que mudou de dominio
+        e deliberada e nao vai embora. O que ele deixa de fazer e virar
+        estado permanente do processo.
+        """
+        host_pedido = (urlparse(url_pedida).hostname or "").lower().rstrip(".")
+        host_final = (urlparse(url_final).hostname or "").lower().rstrip(".")
+        if host_pedido and host_pedido == host_final:
+            return True
+        return self._url_permitida(url_final)
+
     async def _get_with_fallback(self, urls: list[str]) -> httpx.Response | None:
         """
         Tenta cada URL em ordem, com retry transitório por mirror.
@@ -327,8 +352,14 @@ class BaseScraper(ABC):
             parsed = urlparse(str(response.url))
             new_base = f"{parsed.scheme}://{parsed.netloc}"
             if new_base and new_base != self.base_url:
-                logger.info(f"{prefix} URL ativa: {new_base}")
-                self.base_url = new_base
+                if self._pode_adotar_origem(url, str(response.url)):
+                    logger.info(f"{prefix} URL ativa: {new_base}")
+                    self.base_url = new_base
+                else:
+                    logger.warning(
+                        f"{prefix} redirect cruzou para host nao declarado "
+                        f"({new_base}) — usado nesta requisicao, nao adotado"
+                    )
             self.last_error = None
             return response
 
