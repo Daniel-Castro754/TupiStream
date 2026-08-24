@@ -4,7 +4,7 @@ import time
 import uuid
 import weakref
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
 from app.models.config import settings
@@ -29,6 +29,28 @@ PLAY_TIMEOUT_RETRY_AFTER_SECONDS = 5
 # resolved_url e guardada na mesma play session.
 # Por isso o TTL precisa ficar alinhado ao TTL da sessao para nao encurta-la.
 PLAY_RESOLVED_URL_TTL_SECONDS = PLAY_SESSION_TTL_SECONDS
+
+def proteger_resposta_com_token(response: Response) -> None:
+    """
+    Headers para respostas cuja URL carrega o token Real-Debrid no caminho.
+
+    O que isso resolve:
+      Cache-Control  impede que proxy ou browser guardem a resposta.
+      Referrer-Policy impede que o caminho — com o token — seja enviado como
+                     Referer numa navegacao que parta dali.
+      X-Robots-Tag   impede indexacao, caso a URL vaze publicamente.
+
+    O que isso NAO resolve, e vale ser explicito:
+      O token continua no caminho da URL. Log de acesso do proxy, historico
+      do navegador e a URL guardada pelo Stremio seguem expostos — header de
+      resposta nao alcanca nada disso. A correcao de verdade e tirar o token
+      da rota, o que quebra toda URL ja instalada e por isso e decisao de
+      produto, nao de implementacao.
+    """
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+
 
 # Instancia global do agregador.
 aggregator = StreamAggregator()
@@ -158,7 +180,9 @@ def _parse_stremio_id(id: str) -> tuple[str, int | None, int | None]:
 
 
 @router.get("/{rd_token}/stream/{type}/{id}.json")
-async def get_streams_with_rd(rd_token: str, type: str, id: str, request: Request) -> dict:
+async def get_streams_with_rd(
+    rd_token: str, type: str, id: str, request: Request, response: Response
+) -> dict:
     """
     Endpoint de streams com token RD no path.
 
@@ -166,6 +190,7 @@ async def get_streams_with_rd(rd_token: str, type: str, id: str, request: Reques
       O token continua no path do manifest/stream. Este modulo nunca registra
       o token em logs manuais; o risco residual fica nos access logs da infra.
     """
+    proteger_resposta_com_token(response)
     req_id = uuid.uuid4().hex[:8]
     set_req_id(req_id)
     t0 = time.monotonic()
@@ -197,8 +222,10 @@ async def get_streams_hybrid(
     type: str,
     id: str,
     request: Request,
+    response: Response,
 ) -> dict:
     """Endpoint híbrido: resultados Real-Debrid e P2P na mesma busca."""
+    proteger_resposta_com_token(response)
     req_id = uuid.uuid4().hex[:8]
     set_req_id(req_id)
     t0 = time.monotonic()

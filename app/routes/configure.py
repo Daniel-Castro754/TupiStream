@@ -472,7 +472,7 @@ CONFIG_HTML_TEMPLATE = """\
   <div class="card">
     <div class="form-group">
       <label for="rd-token">Token Real-Debrid</label>
-      <input type="text" id="rd-token" placeholder="Insira seu token da API do Real-Debrid" autocomplete="off" spellcheck="false">
+      <input type="password" id="rd-token" placeholder="Insira seu token da API do Real-Debrid" autocomplete="off" spellcheck="false">
       <a href="https://real-debrid.com/apitoken" target="_blank" rel="noopener" class="hint">Onde encontro meu token? &rarr;</a>
       <p class="security-note">
         O token e opcional. Sem token, o addon usa P2P. Com token, o modo padrao

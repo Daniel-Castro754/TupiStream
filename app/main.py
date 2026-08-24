@@ -4,14 +4,14 @@ import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from app.manifest import get_manifest
 from app.models.config import settings
 from app.routes.configure import router as configure_router
-from app.routes.stream import aggregator
+from app.routes.stream import aggregator, proteger_resposta_com_token
 from app.routes.stream import router as stream_router
 from app.services.cache import cache
 
@@ -124,14 +124,16 @@ async def manifest():
 
 
 @app.get("/{rd_token}/manifest.json")
-async def manifest_with_token(rd_token: str):
+async def manifest_with_token(rd_token: str, response: Response):
     """Retorna manifest no modo Real-Debrid."""
+    proteger_resposta_com_token(response)
     return get_manifest()
 
 
 @app.get("/hybrid/{rd_token}/manifest.json")
-async def manifest_hybrid(rd_token: str):
+async def manifest_hybrid(rd_token: str, response: Response):
     """Retorna manifest no modo híbrido: Real-Debrid + P2P."""
+    proteger_resposta_com_token(response)
     return get_manifest()
 
 
