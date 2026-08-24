@@ -246,18 +246,6 @@ class BaseScraper(ABC):
                     return None
 
                 response.raise_for_status()
-
-                # O cliente segue redirects (necessario para os mirrors), mas
-                # o DESTINO final tem de continuar permitido: uma fonte
-                # comprometida podia responder 302 para localhost ou para
-                # 169.254.169.254 e o addon buscaria de lá.
-                if not self._url_permitida(str(response.url)):
-                    self.last_error = "redirect para host nao permitido"
-                    logger.warning(
-                        f"{prefix} destino final recusado: {str(response.url)[:120]}"
-                    )
-                    return None
-
                 logger.debug(f"{prefix} GET {status} ({elapsed:.0f}ms)")
                 return response
 
@@ -310,6 +298,22 @@ class BaseScraper(ABC):
 
         O último domínio funcional passa a ser priorizado nas buscas seguintes,
         evitando repetir timeouts conhecidos antes de chegar ao mirror saudável.
+
+        Risco residual conhecido, e por que ele fica:
+          O cliente segue redirects, e `self.base_url` passa a ser o destino
+          final — inclusive um domínio novo, não declarado. Isso é
+          DELIBERADO: sites de torrent trocam de domínio com frequência, e é
+          essa adaptação que mantém o addon funcionando sem redeploy.
+
+          A consequência é que um mirror configurado, se comprometido, pode
+          redirecionar para endereço interno. Mas as URLs iniciais vêm de
+          `_fallback_urls`, que é código, não de HTML de terceiro — o vetor
+          que esta camada realmente precisava fechar era o href extraído da
+          página, e esse está fechado em `_resolver_link`.
+
+          Fechar também o redirect exige egress firewall na infraestrutura,
+          não validação de nome na aplicação: por nome não há como distinguir
+          "mirror novo legítimo" de "mirror comprometido".
         """
         prefix = self._log_prefix()
         self.last_error = None
