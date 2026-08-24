@@ -59,12 +59,27 @@ class _ClienteLento:
         return _resp({})
 
 
+def _tetos_curtos(minimo: float = 0.05, maximo: float = 0.4):
+    """
+    Encurta MIN/MAX_BUDGET_TITLE_FETCH para o teste rodar rapido.
+
+    Sem baixar o MINIMO, um budget pequeno faz `_fetch_title` retornar antes
+    de abrir o cliente HTTP — o teste passaria sem exercitar o deadline. Foi
+    exatamente o que aconteceu na primeira versao destes testes.
+    """
+    return (
+        patch("app.services.stream_aggregator.MIN_BUDGET_TITLE_FETCH", minimo),
+        patch("app.services.stream_aggregator.MAX_BUDGET_TITLE_FETCH", maximo),
+    )
+
+
 class TestFetchTitleTemTetoAgregado:
     @pytest.mark.asyncio
     async def test_deadline_corta_o_bloco_inteiro(self):
         """
-        Antes, cada chamada tinha seu próprio teto e elas somavam. O tempo
-        total precisa ficar próximo do teto declarado, não de N vezes ele.
+        Antes, cada chamada tinha seu próprio teto e eles somavam: 4 chamadas
+        sequenciais de 4s dentro de uma etapa documentada como tendo teto de
+        4s. O tempo total precisa ficar próximo do teto, não de N vezes ele.
         """
         agg = _aggregator()
         criados = []
@@ -74,12 +89,15 @@ class TestFetchTitleTemTetoAgregado:
             criados.append(c)
             return c
 
+        minimo, maximo = _tetos_curtos()
         loop = asyncio.get_running_loop()
         t0 = loop.time()
-        with patch("httpx.AsyncClient", fabrica):
+        with minimo, maximo, patch("httpx.AsyncClient", fabrica):
             original, ptbr = await agg._fetch_title("tt0816692", "movie", "req1", budget=0.4)
         decorrido = loop.time() - t0
 
+        assert criados, "o cliente HTTP precisa ter sido aberto — senao o teste passa por vazio"
+        assert criados[0].chamadas, "nenhuma requisicao foi feita"
         assert decorrido < 1.5, f"levou {decorrido:.2f}s — o deadline nao cortou o bloco"
         assert original == "tt0816692"
         assert ptbr == "tt0816692"
@@ -92,17 +110,25 @@ class TestFetchTitleTemTetoAgregado:
         """
         agg = _aggregator()
         cinemeta = _resp({"meta": {"name": "Interstellar"}})
+        criados = []
 
         def fabrica(*args, **kwargs):
-            return _ClienteLento(atraso=5.0, respostas=[cinemeta])
+            c = _ClienteLento(atraso=5.0, respostas=[cinemeta])
+            criados.append(c)
+            return c
 
-        with patch("httpx.AsyncClient", fabrica):
+        minimo, maximo = _tetos_curtos()
+        with minimo, maximo, patch("httpx.AsyncClient", fabrica):
             original, ptbr = await agg._fetch_title("tt0816692", "movie", "req1", budget=0.4)
 
+        assert criados and len(criados[0].chamadas) >= 2, (
+            "precisa ter feito a chamada do Cinemeta E travado na seguinte"
+        )
         assert original == "Interstellar", "o titulo ja obtido nao pode ser perdido"
 
     @pytest.mark.asyncio
     async def test_budget_insuficiente_nem_abre_cliente(self):
+        """Com os tetos REAIS (MIN=2,0s), budget de 0,1s nem chega na rede."""
         chamou = {"v": False}
 
         def fabrica(*args, **kwargs):
