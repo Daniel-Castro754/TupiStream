@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import uuid
+from dataclasses import dataclass, field
 
 from app.models.config import settings
 from app.models.torrent import StreamResult, TorrentResult
@@ -63,6 +64,50 @@ CIRCUIT_BREAKER_COOLDOWN_SECONDS = 300  # 5 min — reavalia periodicamente
 # snapshot no cache já existente (SQLite/Redis) e recarregamos no startup.
 HEALTH_CACHE_KEY = "source_health:v1"
 HEALTH_CACHE_TTL_SECONDS = 7 * 24 * 3600  # 7 dias — é só telemetria/diagnóstico
+
+
+@dataclass(frozen=True)
+class ScrapeOutcome:
+    """
+    Resultado de uma rodada de scrapers, com o diagnostico que o chamador
+    precisa para decidir se aquele resultado pode ir para o cache.
+
+    Antes `_run_scrapers` devolvia so `list[TorrentResult]`, e uma lista
+    vazia era ambigua — podia significar qualquer um destes:
+
+      1. as fontes responderam bem e o conteudo nao existe nelas;
+      2. todas as fontes falharam (erro, timeout, bloqueio anti-bot);
+      3. todas estavam em cooldown do circuit breaker;
+      4. o budget acabou antes de chegar a roda-las.
+
+    `get_streams` gravava `[]` no cache com o TTL padrao nos quatro casos.
+    Ou seja: uma indisponibilidade temporaria — ou uma unica requisicao
+    lenta que estourou o budget — congelava o conteudo como "nao existe"
+    por uma hora inteira.
+
+    So o caso 1 e informacao. Os outros tres sao ausencia de informacao.
+    """
+
+    torrents: list[TorrentResult] = field(default_factory=list)
+    ok_sources: int = 0        # responderam sem erro (com ou sem resultado)
+    failed_sources: int = 0    # erro, timeout ou indisponivel
+    skipped_sources: int = 0   # circuit breaker aberto, ou nao usa texto
+    ran: bool = True           # False = nem chegou a executar
+
+    @property
+    def confiavel(self) -> bool:
+        """Vazio so e informacao se alguma fonte respondeu bem."""
+        return self.ran and self.ok_sources > 0
+
+    def combinar(self, outra: "ScrapeOutcome", torrents: list[TorrentResult]) -> "ScrapeOutcome":
+        """Soma o diagnostico de duas rodadas sobre uma lista ja deduplicada."""
+        return ScrapeOutcome(
+            torrents=torrents,
+            ok_sources=self.ok_sources + outra.ok_sources,
+            failed_sources=self.failed_sources + outra.failed_sources,
+            skipped_sources=self.skipped_sources + outra.skipped_sources,
+            ran=self.ran or outra.ran,
+        )
 
 
 def _build_scraper_list() -> list[BaseScraper]:
@@ -379,34 +424,39 @@ class StreamAggregator:
             # Primeira rodada (PT-BR)
             remaining = self._budget_remaining(t_start)
             if remaining > MIN_BUDGET_SCRAPERS:
-                torrent_results = await self._run_scrapers(
+                resultado = await self._run_scrapers(
                     titulo_ptbr, imdb_id, type, req_id, "ptbr", remaining,
                     season=season, episode=episode,
                 )
             else:
                 logger.warning(f"[{req_id}] Budget esgotado antes dos scrapers ({remaining:.1f}s)")
-                torrent_results = []
+                resultado = ScrapeOutcome(ran=False)
 
             # Segunda rodada (título original) — só se necessário e viável
             remaining = self._budget_remaining(t_start)
-            if len(torrent_results) < 3 and titulo_original != titulo_ptbr and remaining > MIN_BUDGET_SCRAPERS:
+            if (
+                len(resultado.torrents) < 3
+                and titulo_original != titulo_ptbr
+                and remaining > MIN_BUDGET_SCRAPERS
+            ):
                 logger.info(
-                    f"[{req_id}] Poucos resultados ({len(torrent_results)}), "
+                    f"[{req_id}] Poucos resultados ({len(resultado.torrents)}), "
                     f"segunda rodada (budget={remaining:.1f}s)..."
                 )
                 extras = await self._run_scrapers(
                     titulo_original, imdb_id, type, req_id, "original", remaining,
                     season=season, episode=episode, skip_query_independent=True,
                 )
-                torrent_results = self._deduplicate(torrent_results + extras)
-            elif len(torrent_results) < 3 and titulo_original != titulo_ptbr:
+                resultado = resultado.combinar(
+                    extras, self._deduplicate(resultado.torrents + extras.torrents)
+                )
+            elif len(resultado.torrents) < 3 and titulo_original != titulo_ptbr:
                 logger.warning(
                     f"[{req_id}] Budget insuficiente para segunda rodada ({remaining:.1f}s)"
                 )
 
-            # Salva no cache
-            await cache.set(cache_key, [t.model_dump() for t in torrent_results])
-            logger.info(f"[{req_id}] [CACHE SET] {cache_key} → {len(torrent_results)} torrents")
+            torrent_results = resultado.torrents
+            await self._cachear_busca(cache_key, resultado, req_id)
 
         # Ordena os torrents uma vez. No modo híbrido, cada torrent elegível
         # pode gerar duas opções: uma via RD e outra via P2P.
@@ -485,7 +535,7 @@ class StreamAggregator:
         req_id: str, label: str, budget: float,
         season: int | None = None, episode: int | None = None,
         skip_query_independent: bool = False,
-    ) -> list[TorrentResult]:
+    ) -> ScrapeOutcome:
         """
         Executa scrapers em paralelo e registra a saúde da última consulta.
 
@@ -503,12 +553,14 @@ class StreamAggregator:
         """
         if not self.scrapers:
             logger.warning(f"[{req_id}] Nenhum scraper ativo!")
-            return []
+            return ScrapeOutcome(ran=False)
 
         agora = time.monotonic()
         scrapers_a_rodar: list[BaseScraper] = []
+        pulados = 0
         for scraper in self.scrapers:
             if skip_query_independent and not scraper.USES_TEXT_QUERY:
+                pulados += 1
                 logger.debug(
                     f"[{req_id}] [{label}] [{scraper.name}] pulado — não depende "
                     f"do texto de busca, já rodou na primeira rodada"
@@ -518,6 +570,7 @@ class StreamAggregator:
             health = self.source_health.setdefault(scraper.name, {})
             skip_until = health.get("skip_until")
             if skip_until and agora < skip_until:
+                pulados += 1
                 logger.info(
                     f"[{req_id}] [{label}] [{scraper.name}] pulado — circuit breaker "
                     f"aberto (volta em {skip_until - agora:.0f}s)"
@@ -527,7 +580,7 @@ class StreamAggregator:
 
         if not scrapers_a_rodar:
             logger.warning(f"[{req_id}] Todas as fontes estão em cooldown (circuit breaker)")
-            return []
+            return ScrapeOutcome(ran=False, skipped_sources=pulados)
 
         effective_timeout = min(settings.SCRAPER_TIMEOUT_SECONDS + 2.0, budget)
 
@@ -557,6 +610,8 @@ class StreamAggregator:
         resultados = await asyncio.gather(*[_timed_search(scraper) for scraper in scrapers_a_rodar])
 
         todos: list[TorrentResult] = []
+        fontes_ok = 0
+        fontes_com_falha = 0
         for scraper, resultado, elapsed_ms in resultados:
             health = self.source_health.setdefault(scraper.name, {})
             health.update(
@@ -565,6 +620,7 @@ class StreamAggregator:
             )
 
             if isinstance(resultado, Exception):
+                fontes_com_falha += 1
                 self._registrar_falha(health, str(resultado))
                 logger.warning(
                     f"[{req_id}] [{label}] [{scraper.name}] FALHOU: "
@@ -580,6 +636,7 @@ class StreamAggregator:
 
             count = len(resultado)
             if count == 0 and scraper.last_error:
+                fontes_com_falha += 1
                 self._registrar_falha(health, scraper.last_error, status="unavailable")
                 logger.warning(
                     f"[{req_id}] [{label}] [{scraper.name}] INDISPONÍVEL: "
@@ -594,6 +651,7 @@ class StreamAggregator:
             else:
                 # Sucesso real (com ou sem resultado) — zera o contador de
                 # falhas e fecha o circuit breaker se estava aberto.
+                fontes_ok += 1
                 health.update(
                     status="ok" if count else "empty",
                     last_count=count,
@@ -608,7 +666,46 @@ class StreamAggregator:
             todos.extend(resultado)
 
         await self._persist_health()
-        return self._deduplicate(todos)
+        return ScrapeOutcome(
+            torrents=self._deduplicate(todos),
+            ok_sources=fontes_ok,
+            failed_sources=fontes_com_falha,
+            skipped_sources=pulados,
+        )
+
+    async def _cachear_busca(
+        self, cache_key: str, resultado: ScrapeOutcome, req_id: str
+    ) -> None:
+        """
+        Decide se — e por quanto tempo — o resultado da busca vai para o cache.
+
+        Regra: vazio só é cacheável quando alguma fonte respondeu bem. Se
+        todas falharam, estavam em cooldown ou nem chegaram a rodar, gravar
+        `[]` transformaria uma indisponibilidade de segundos num "esse
+        conteúdo não existe" de uma hora — e o próximo request nem tentaria
+        de novo, porque acharia cache válido.
+        """
+        payload = [t.model_dump() for t in resultado.torrents]
+
+        if resultado.torrents:
+            await cache.set(cache_key, payload)
+            logger.info(f"[{req_id}] [CACHE SET] {cache_key} → {len(payload)} torrents")
+            return
+
+        if resultado.confiavel:
+            ttl = settings.NEGATIVE_CACHE_TTL_SECONDS
+            await cache.set(cache_key, payload, ttl=ttl)
+            logger.info(
+                f"[{req_id}] [CACHE SET] {cache_key} → vazio confirmado por "
+                f"{resultado.ok_sources} fonte(s), TTL curto de {ttl}s"
+            )
+            return
+
+        logger.warning(
+            f"[{req_id}] [CACHE SKIP] {cache_key} → vazio sem nenhuma fonte saudável "
+            f"({resultado.failed_sources} falharam, {resultado.skipped_sources} puladas, "
+            f"executou={resultado.ran}) — não cacheado para não congelar indisponibilidade"
+        )
 
     def _registrar_falha(self, health: dict, erro: str, status: str = "error") -> None:
         """Incrementa o contador de falhas seguidas e abre o circuit breaker

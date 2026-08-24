@@ -4,7 +4,7 @@ import pytest
 
 from app.models.torrent import TorrentResult
 from app.routes.configure import _build_config_html
-from app.services.stream_aggregator import StreamAggregator
+from app.services.stream_aggregator import ScrapeOutcome, StreamAggregator
 
 
 def _torrent() -> TorrentResult:
@@ -40,7 +40,9 @@ async def test_sem_token_retorna_apenas_p2p():
             with patch.object(
                 aggregator,
                 "_run_scrapers",
-                new=AsyncMock(return_value=[_torrent()]),
+                new=AsyncMock(
+                    return_value=ScrapeOutcome(torrents=[_torrent()], ok_sources=1)
+                ),
             ):
                 streams = await aggregator.get_streams(
                     imdb_id="tt1234567",
@@ -78,7 +80,9 @@ async def test_modo_hibrido_retorna_rd_e_p2p():
             with patch.object(
                 aggregator,
                 "_run_scrapers",
-                new=AsyncMock(return_value=[_torrent()]),
+                new=AsyncMock(
+                    return_value=ScrapeOutcome(torrents=[_torrent()], ok_sources=1)
+                ),
             ):
                 with patch(
                     "app.services.stream_aggregator.uuid.uuid4",

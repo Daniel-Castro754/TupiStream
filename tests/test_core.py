@@ -22,7 +22,7 @@ from app.models.config import settings
 from app.models.torrent import StreamResult, TorrentResult
 from app.scrapers.base import BaseScraper, set_req_id, get_req_id, _current_req_id
 from app.services.real_debrid import RealDebridPlaybackNotReadyError, RealDebridResolveError, RealDebridService
-from app.services.stream_aggregator import PLAY_SESSION_TTL_SECONDS, StreamAggregator
+from app.services.stream_aggregator import ScrapeOutcome, PLAY_SESSION_TTL_SECONDS, StreamAggregator
 
 
 # ─── Fixtures ───
@@ -249,7 +249,10 @@ class TestPlaySessions:
             torrent = _make_torrent()
             fake_uuid = "play-session-123"
             with patch.object(agg, "_fetch_title", return_value=("Test", "Teste")):
-                with patch.object(agg, "_run_scrapers", return_value=[torrent]):
+                with patch.object(
+                    agg, "_run_scrapers",
+                    return_value=ScrapeOutcome(torrents=[torrent], ok_sources=1),
+                ):
                     with patch("app.services.stream_aggregator.uuid.uuid4", return_value=fake_uuid):
                         streams = await agg.get_streams(
                             imdb_id="tt1234567",
@@ -295,7 +298,10 @@ class TestPlaySessions:
             torrent = _make_torrent()
             fake_uuid = "play-origin-test"
             with patch.object(agg, "_fetch_title", return_value=("Test", "Teste")):
-                with patch.object(agg, "_run_scrapers", return_value=[torrent]):
+                with patch.object(
+                    agg, "_run_scrapers",
+                    return_value=ScrapeOutcome(torrents=[torrent], ok_sources=1),
+                ):
                     with patch("app.services.stream_aggregator.uuid.uuid4", return_value=fake_uuid):
                         streams = await agg.get_streams(
                             imdb_id="tt1234567",
@@ -325,7 +331,10 @@ class TestPlaySessions:
             torrent = _make_torrent()
             fake_uuid = "play-fallback-test"
             with patch.object(agg, "_fetch_title", return_value=("Test", "Teste")):
-                with patch.object(agg, "_run_scrapers", return_value=[torrent]):
+                with patch.object(
+                    agg, "_run_scrapers",
+                    return_value=ScrapeOutcome(torrents=[torrent], ok_sources=1),
+                ):
                     with patch("app.services.stream_aggregator.uuid.uuid4", return_value=fake_uuid):
                         streams = await agg.get_streams(
                             imdb_id="tt1234567",
@@ -353,7 +362,10 @@ class TestPlaySessions:
             torrent = _make_torrent()
             fake_uuid = "play-custom-host"
             with patch.object(agg, "_fetch_title", return_value=("Test", "Teste")):
-                with patch.object(agg, "_run_scrapers", return_value=[torrent]):
+                with patch.object(
+                    agg, "_run_scrapers",
+                    return_value=ScrapeOutcome(torrents=[torrent], ok_sources=1),
+                ):
                     with patch("app.services.stream_aggregator.uuid.uuid4", return_value=fake_uuid):
                         streams = await agg.get_streams(
                             imdb_id="tt1234567",
