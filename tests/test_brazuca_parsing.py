@@ -59,30 +59,31 @@ class TestParsearStream:
         s = BrazucaAddonScraper()
         assert s._parsear_stream({"title": "Sem hash e sem url"}) is None
 
-    def test_stream_so_com_url_direta_fica_sem_hash_nem_magnet(self):
+    def test_stream_so_com_url_direta_e_recusado(self):
         """
-        Documenta o comportamento atual: um stream só com `url` (sem
-        infoHash) não vira um TorrentResult utilizável para P2P — fica com
-        info_hash e magnet vazios. O comentário do código fala em "hash
-        fictício baseado na URL", mas isso não é implementado; o resultado
-        seria descartado silenciosamente pelo _deduplicate do agregador
-        (que pula qualquer torrent com info_hash vazio).
+        Um stream só com `url` (sem infoHash) agora é recusado de imediato.
 
-        Isso não é necessariamente errado: gerar um hash fictício faria o
-        item sobreviver ao dedup, mas o Stremio tentaria usá-lo como um
-        infoHash de BitTorrent real — e como não corresponde a nenhum
-        torrent de verdade, o stream apareceria na lista e nunca tocaria.
-        Suporte de verdade a "URL direta" exigiria um campo próprio no
-        pipeline (TorrentResult/StreamResult), não um hash fictício.
+        A versão anterior deste teste fixava o comportamento antigo:
+        `_parsear_stream` devolvia um TorrentResult com info_hash="" e
+        magnet="". O raciocínio registrado ali continua válido e é a razão
+        desta mudança — gerar um hash fictício seria pior (o Stremio tentaria
+        usá-lo como infoHash real e o stream nunca tocaria), e suporte de
+        verdade a URL direta exigiria um campo próprio no pipeline.
+
+        O que faltava era a terceira opção: não construir o objeto. O
+        resultado com hash vazio era descartado logo depois pelo
+        _deduplicate do agregador (`if not info_hash: continue`), então
+        montá-lo era trabalho garantido para o lixo — e o comentário no
+        código afirmava fazer algo ("hash fictício baseado na URL") que
+        nunca foi implementado.
+
+        Recusar na origem tem o mesmo efeito observável, sem código que
+        mente sobre o que faz.
         """
         s = BrazucaAddonScraper()
         stream = {"url": "https://exemplo.com/stream.mp4", "title": "Filme Direto"}
 
-        torrent = s._parsear_stream(stream)
-
-        assert torrent is not None
-        assert torrent.info_hash == ""
-        assert torrent.magnet == ""
+        assert s._parsear_stream(stream) is None
 
     def test_usa_name_quando_nao_ha_title(self):
         s = BrazucaAddonScraper()

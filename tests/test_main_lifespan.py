@@ -27,14 +27,23 @@ class TestLifespan:
         mock_aggregator.restore_health_from_cache.side_effect = (
             lambda: chamadas.append("restore_health")
         )
+        mock_aggregator.close.side_effect = lambda: chamadas.append("aggregator.close")
 
         with patch("app.main.cache", mock_cache), patch("app.main.aggregator", mock_aggregator):
             async with lifespan(app):
                 # dentro do "yield" — só o startup deve ter rodado até aqui
                 assert chamadas == ["cache.init", "restore_health"]
 
-        # depois de sair do context manager, o shutdown deve ter rodado
-        assert chamadas == ["cache.init", "restore_health", "cache.delete_expired", "cache.close"]
+        # depois de sair do context manager, o shutdown deve ter rodado.
+        # aggregator.close() fecha os clientes httpx dos scrapers e precisa
+        # acontecer no shutdown — antes nao era chamado em lugar nenhum.
+        assert chamadas == [
+            "cache.init",
+            "restore_health",
+            "aggregator.close",
+            "cache.delete_expired",
+            "cache.close",
+        ]
 
     @pytest.mark.asyncio
     async def test_restore_health_so_roda_depois_do_cache_init(self):

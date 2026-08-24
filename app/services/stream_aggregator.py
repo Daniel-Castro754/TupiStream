@@ -244,7 +244,11 @@ class StreamAggregator:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 # Cinemeta — título principal (pode vir em PT-BR)
-                for content_type in [type, "movie", "series"]:
+                # dict.fromkeys remove duplicata preservando a ordem: com
+                # type="movie" a lista era ["movie", "movie", "series"] e a
+                # MESMA URL era pedida duas vezes se a primeira falhasse —
+                # uma ida de rede jogada fora dentro de um budget de 4s.
+                for content_type in dict.fromkeys([type, "movie", "series"]):
                     r = await client.get(
                         f"https://v3-cinemeta.strem.io/meta/{content_type}/{imdb_id}.json"
                     )
@@ -576,7 +580,7 @@ class StreamAggregator:
 
             count = len(resultado)
             if count == 0 and scraper.last_error:
-                self._registrar_falha(health, scraper.last_error)
+                self._registrar_falha(health, scraper.last_error, status="unavailable")
                 logger.warning(
                     f"[{req_id}] [{label}] [{scraper.name}] INDISPONÍVEL: "
                     f"{scraper.last_error} ({elapsed_ms:.0f}ms) "
@@ -606,11 +610,22 @@ class StreamAggregator:
         await self._persist_health()
         return self._deduplicate(todos)
 
-    def _registrar_falha(self, health: dict, erro: str) -> None:
+    def _registrar_falha(self, health: dict, erro: str, status: str = "error") -> None:
         """Incrementa o contador de falhas seguidas e abre o circuit breaker
-        (define skip_until) quando o limite é atingido."""
+        (define skip_until) quando o limite é atingido.
+
+        `status` distingue os dois modos de falha que _run_scrapers já separa
+        nos logs mas nunca conseguia refletir no /health:
+          - "error":       o scraper levantou exceção ou estourou o timeout
+          - "unavailable": retornou vazio tendo registrado erro de transporte
+
+        Antes o valor era derivado do próprio health:
+            "error" if health.get("status") != "unavailable" else "unavailable"
+        Como nada em lugar nenhum jamais atribuía "unavailable", a condição
+        era sempre verdadeira e o status era sempre "error" — o ramo
+        "unavailable" era inalcançável e o /health nunca mostrava esse estado.
+        """
         falhas = health.get("consecutive_failures", 0) + 1
-        status = "error" if health.get("status") != "unavailable" else "unavailable"
         health.update(
             status=status,
             last_count=0,

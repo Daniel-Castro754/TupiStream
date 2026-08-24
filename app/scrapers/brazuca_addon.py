@@ -63,23 +63,26 @@ class BrazucaAddonScraper(BaseScraper):
         return resultados
 
     def _parsear_stream(self, stream: dict) -> TorrentResult | None:
-        """Converte um objeto stream do Stremio em TorrentResult"""
-        info_hash = stream.get("infoHash", "")
-        url_direta = stream.get("url", "")
+        """Converte um objeto stream do Stremio em TorrentResult.
 
-        # Precisa ter pelo menos infoHash ou url
-        if not info_hash and not url_direta:
+        Streams sem `infoHash` (só com `url` direta) são recusados aqui.
+
+        O ramo anterior alegava, em comentário, "gera um hash fictício baseado
+        na URL para deduplicação" — mas o que o código fazia era atribuir
+        info_hash = "". E _deduplicate descarta todo resultado com hash vazio
+        (`if not info_hash: continue`). Ou seja: o TorrentResult era montado
+        para ser jogado fora poucas linhas depois, com magnet="" e sem
+        nenhuma chance de ser elegível a Real-Debrid.
+
+        Recusar de imediato tem o mesmo efeito observável e deixa o custo e a
+        intenção explícitos. Suportar url direta de verdade exigiria um campo
+        próprio no modelo e validação de destino — mudança de escopo maior.
+        """
+        info_hash = str(stream.get("infoHash") or "").lower().strip()
+        if not info_hash:
             return None
 
-        # Monta magnet a partir do infoHash
-        if info_hash:
-            info_hash = info_hash.lower().strip()
-            magnet = f"magnet:?xt=urn:btih:{info_hash}"
-        else:
-            # Sem hash — usa url direta, magnet vazio
-            magnet = ""
-            # Gera um hash fictício baseado na URL para deduplicação
-            info_hash = ""
+        magnet = f"magnet:?xt=urn:btih:{info_hash}"
 
         # Extrai título do stream
         titulo = stream.get("title", "") or stream.get("name", "") or "Sem título"
