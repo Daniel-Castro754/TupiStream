@@ -6,11 +6,15 @@ from difflib import SequenceMatcher
 from urllib.parse import unquote, urlsplit
 
 # Termos de release que não ajudam a identificar a obra.
+# Canal de audio: um digito, ponto, um digito. Pega 5.1, 7.1, 2.0, 6.1 e o
+# sufixo de "DDP5.1"/"AC3 5.1". Nao pega ano nem resolucao.
+_CANAL_DE_AUDIO = re.compile(r"(?<!\d)\d\.\d(?!\d)")
+
 _NOISE = {
     "baixar", "download", "torrent", "filme", "filmes", "serie", "series",
     "temporada", "completa", "completo", "dublado", "dublada", "legendado",
     "legendada", "dual", "audio", "pt", "br", "web", "dl", "webrip",
-    "bluray", "blu", "ray", "remux", "hdr", "dv", "dolby", "vision",
+    "bluray", "blu", "remux", "hdr", "dv", "dolby", "vision",
     "x264", "x265", "h264", "h265", "hevc", "aac", "atmos", "imax",
     # Faltavam. "4k" nao casa o padrao \d{3,4}p, entao sobrevivia a
     # normalizacao e derrubava a similaridade: "The Batman" REJEITAVA
@@ -27,13 +31,36 @@ def normalize_release_title(value: str) -> str:
     value = unquote(value or "")
     value = unicodedata.normalize("NFKD", value)
     value = "".join(ch for ch in value if not unicodedata.combining(ch))
+
+    # Notacao de canal de audio ("5.1", "7.1", "2.0", "DDP5.1") sai ANTES da
+    # tokenizacao. Sem isso ela vira dois tokens numericos soltos e o primeiro
+    # deles fica encostado no titulo:
+    #
+    #     "Taken 2008 BluRay 5.1 Dublado"  ->  "taken 5 1"
+    #                                                  ^ lido como sequencia
+    #
+    # Consequencia medida: "Taken", "Up", "Interstellar" e "Dune" rejeitavam
+    # os proprios releases quando o token anterior ao canal era ruido. E
+    # notacao de canal e onipresente em release name PT-BR.
+    value = _CANAL_DE_AUDIO.sub(" ", value)
+
     tokens = re.findall(r"[a-z0-9]+", value.lower())
 
     # Dois passes. Primeiro tudo que e inequivocamente ruido de release;
     # os anos ficam separados porque eles podem SER o titulo.
     cleaned: list[str] = []
     anos: list[str] = []
+    anterior = ""
     for token in tokens:
+        # "ray" e ruido apenas dentro de "Blu-Ray". Sozinho e o filme Ray
+        # (2004), que normalizava para string vazia — e is_relevant_release
+        # rejeita todo candidato quando a query normaliza vazia. Mesma classe
+        # do apagao de titulo-ano, por outra via.
+        if token == "ray" and anterior == "blu":
+            anterior = token
+            continue
+        anterior = token
+
         if token in _NOISE:
             continue
         if re.fullmatch(r"\d{3,4}p", token):
@@ -76,9 +103,20 @@ def normalize_release_title(value: str) -> str:
 _NUMERAIS_ROMANOS = {"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"}
 
 # Palavras que marcam continuacao logo apos o titulo base.
+# Marcadores de continuacao. A lista e deliberadamente curta.
+#
+# "volume", "vol", "episode", "episodio" e "capitulo" foram REMOVIDOS: eles
+# aparecem em titulo canonico e em release de episodio PT-BR, entao tratá-los
+# como marcador rejeitava resultado legitimo —
+#
+#     "Kill Bill"  x "Kill Bill Volume 1"          (o filme e Volume 1)
+#     "Star Wars"  x "Star Wars Episodio IV"       (Episodio IV E Star Wars)
+#     "Dark"       x "Dark Episodio 5 Dublado"     (episodio avulso da serie)
+#
+# "part"/"parte"/"chapter" ficam porque marcam obra distinta de verdade:
+# "Dune Part Two", "John Wick Chapter 4", "Reliquias da Morte Parte 1".
 _MARCADORES_DE_SEQUENCIA = {
-    "part", "parte", "chapter", "capitulo", "episode", "episodio",
-    "volume", "vol",
+    "part", "parte", "chapter",
     # Crossover tambem e outra obra: "Alien vs Predator" nao atende
     # busca por "Alien", assim como "Taken 2" nao atende "Taken".
     "vs", "versus",
