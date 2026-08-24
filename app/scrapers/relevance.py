@@ -64,16 +64,24 @@ def normalize_release_title(value: str) -> str:
     return " ".join(cleaned)
 
 
-# Numerais romanos usados como marcador de sequencia. "v" fica de fora de
-# proposito: aparece como "versus" ("Batman v Superman") e como letra solta,
-# entao incluir criaria falso negativo mais caro que o falso positivo que
-# evitaria.
-_NUMERAIS_ROMANOS = {"ii", "iii", "iv", "vi", "vii", "viii", "ix", "x"}
+# Numerais romanos usados como marcador de sequencia.
+#
+# "v" esteve fora daqui por um raciocinio errado meu: eu argumentei que ele
+# aparece como "versus" em "Batman v Superman" e que incluir criaria falso
+# negativo. O raciocinio estava invertido. A regra so dispara quando o titulo
+# BUSCADO e seguido do marcador — e buscar "Batman" para receber
+# "Batman v Superman" e exatamente o falso positivo que queremos matar, do
+# mesmo modo que "Rocky" nao deve devolver "Rocky V". Sao obras diferentes
+# nos dois casos, com hash, audio e duracao diferentes.
+_NUMERAIS_ROMANOS = {"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"}
 
 # Palavras que marcam continuacao logo apos o titulo base.
 _MARCADORES_DE_SEQUENCIA = {
     "part", "parte", "chapter", "capitulo", "episode", "episodio",
     "volume", "vol",
+    # Crossover tambem e outra obra: "Alien vs Predator" nao atende
+    # busca por "Alien", assim como "Taken 2" nao atende "Taken".
+    "vs", "versus",
 }
 
 _ANO = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
