@@ -261,6 +261,16 @@ class StreamAggregator:
         elapsed = time.monotonic() - t_start
         return max(0.0, settings.REQUEST_BUDGET_SECONDS - elapsed)
 
+    def _budget_para_scrapers(self, t_start: float) -> float:
+        """
+        Budget restante menos a margem reservada para fechar a resposta.
+
+        Depois dos scrapers ainda e preciso ordenar, serializar os
+        StreamResult e gravar as play sessions. Sem reservar nada, os
+        scrapers podiam consumir ate o ultimo milissegundo do budget.
+        """
+        return max(0.0, self._budget_remaining(t_start) - settings.BUDGET_RESERVE_SECONDS)
+
     async def _fetch_title(
         self, imdb_id: str, type: str, req_id: str, budget: float
     ) -> tuple[str, str]:
@@ -286,8 +296,20 @@ class StreamAggregator:
 
         timeout = min(budget, MAX_BUDGET_TITLE_FETCH)
 
+        # `httpx.AsyncClient(timeout=X)` aplica X POR OPERACAO, nao ao bloco.
+        # Como as chamadas aqui sao sequenciais — 2x Cinemeta + TMDB + OMDb —
+        # o pior caso era 4 x 4,0s = 16s numa etapa documentada como tendo
+        # teto de 4s, dentro de um REQUEST_BUDGET_SECONDS de 12s. Medido:
+        # 4 chamadas travadas levavam 1,63s com teto de 0,4s cada, e 0,40s
+        # sob timeout_at. O timeout do cliente continua valendo como teto por
+        # operacao; o timeout_at e o teto agregado.
+        prazo = asyncio.get_running_loop().time() + timeout
+
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with (
+                asyncio.timeout_at(prazo),
+                httpx.AsyncClient(timeout=timeout) as client,
+            ):
                 # Cinemeta — título principal (pode vir em PT-BR)
                 # dict.fromkeys remove duplicata preservando a ordem: com
                 # type="movie" a lista era ["movie", "movie", "series"] e a
@@ -354,6 +376,14 @@ class StreamAggregator:
                     except Exception as e:
                         logger.warning(f"[{req_id}] [_fetch_title] OMDB falhou: {e}")
 
+        except TimeoutError:
+            # Parcial sobrevive: o `return` fica FORA do bloco e as variaveis
+            # ja atribuidas permanecem. Se o Cinemeta respondeu antes de o
+            # OMDb travar, o titulo dele chega ao chamador.
+            logger.warning(
+                f"[{req_id}] [_fetch_title] deadline de {timeout:.1f}s esgotado "
+                f"— seguindo com original={titulo_original!r}"
+            )
         except Exception as e:
             logger.warning(f"[{req_id}] [_fetch_title] Erro ({timeout:.1f}s timeout): {e}")
             titulo_ptbr = titulo_original
@@ -422,7 +452,7 @@ class StreamAggregator:
             )
 
             # Primeira rodada (PT-BR)
-            remaining = self._budget_remaining(t_start)
+            remaining = self._budget_para_scrapers(t_start)
             if remaining > MIN_BUDGET_SCRAPERS:
                 resultado = await self._run_scrapers(
                     titulo_ptbr, imdb_id, type, req_id, "ptbr", remaining,
@@ -433,7 +463,7 @@ class StreamAggregator:
                 resultado = ScrapeOutcome(ran=False)
 
             # Segunda rodada (título original) — só se necessário e viável
-            remaining = self._budget_remaining(t_start)
+            remaining = self._budget_para_scrapers(t_start)
             if (
                 len(resultado.torrents) < 3
                 and titulo_original != titulo_ptbr

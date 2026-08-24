@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 import uuid
@@ -5,18 +6,24 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
+from app.models.config import settings
 from app.scrapers.base import set_req_id
 from app.services.cache import CacheWriteError, cache
 from app.services.real_debrid import (
     RealDebridPlaybackNotReadyError,
     RealDebridResolveError,
     RealDebridService,
+    RealDebridTimeoutError,
 )
 from app.services.stream_aggregator import PLAY_SESSION_TTL_SECONDS, StreamAggregator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 PLAY_NOT_READY_RETRY_AFTER_SECONDS = 2
+# Retry mais conservador no 504: enquanto o fluxo RD nao for idempotente
+# (o retry recomeca no addMagnet), convidar a repetir rapido multiplica
+# torrent na conta do usuario.
+PLAY_TIMEOUT_RETRY_AFTER_SECONDS = 5
 # resolved_url e guardada na mesma play session.
 # Por isso o TTL precisa ficar alinhado ao TTL da sessao para nao encurta-la.
 PLAY_RESOLVED_URL_TTL_SECONDS = PLAY_SESSION_TTL_SECONDS
@@ -245,13 +252,31 @@ async def play_stream(play_id: str, request: Request):
     logger.info(f"[{req_id}] [PLAY] {method} Inicio {play_ref}")
 
     rd = RealDebridService(rd_token, req_id=req_id, play_ref=play_ref)
+    prazo = asyncio.get_running_loop().time() + settings.PLAYBACK_BUDGET_SECONDS
     try:
         try:
             stream_url = await rd.get_stream_url(
                 magnet=magnet,
                 type=type_,
                 stremio_id=stremio_id,
+                deadline=prazo,
             )
+        except RealDebridTimeoutError as exc:
+            # 504 e nao 502: o upstream nao respondeu a tempo, nao falhou.
+            # 503 continua reservado para "torrent ainda nao pronto".
+            elapsed = (time.monotonic() - t0) * 1000
+            logger.error(
+                f"[{req_id}] [PLAY] {method} 504 deadline de playback "
+                f"({settings.PLAYBACK_BUDGET_SECONDS}s) {play_ref} ({elapsed:.0f}ms)"
+            )
+            raise HTTPException(
+                status_code=504,
+                detail="Tempo esgotado ao resolver o playback. Tente novamente.",
+                headers={
+                    "Retry-After": str(PLAY_TIMEOUT_RETRY_AFTER_SECONDS),
+                    "Cache-Control": "no-store",
+                },
+            ) from exc
         except RealDebridPlaybackNotReadyError as exc:
             elapsed = (time.monotonic() - t0) * 1000
             logger.warning(

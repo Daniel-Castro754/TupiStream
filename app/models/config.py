@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     # O Stremio corta em ~20s — este budget garante resposta antes disso.
     REQUEST_BUDGET_SECONDS: float = 12.0
 
+    # Margem do budget reservada para fechar a resposta: serializar os
+    # StreamResult e gravar as play sessions. Antes os scrapers podiam
+    # consumir ate o ultimo milissegundo e sobrava zero para isso.
+    BUDGET_RESERVE_SECONDS: float = 0.5
+
+    # ── Playback — budget total do /play ──
+    # O fluxo Real-Debrid sao ate 7 chamadas sequenciais de 15s cada, mais
+    # 1,5s de sleep entre retries: 106,5s no pior caso, sem teto algum. O
+    # Stremio corta em ~20s, entao o servidor ficava trabalhando muito tempo
+    # depois de o cliente ja ter desistido.
+    PLAYBACK_BUDGET_SECONDS: float = 20.0
+
     # ── Scrapers — timeout por scraper ──
     SCRAPER_TIMEOUT_SECONDS: float = 8.0
 
