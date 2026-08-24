@@ -65,6 +65,52 @@ CORPUS = [
 ]
 
 
+CORPUS_SERIES = [
+    ('Breaking Bad', 'Breaking Bad 2 Temporada Completa 1080p Dublado', '', True, 'temporada'),
+    ('Dark', 'Dark 2 Temporada Completa Dublado', '', True, 'temporada'),
+    ('The Boys', 'The Boys 4 Temporada 1080p Dublado', '', True, 'temporada'),
+    ('La Casa de Papel', 'La Casa de Papel 3 Temporada Completa', '', True, 'temporada'),
+    ('Stranger Things', 'Stranger Things 1 Temporada Completa 1080p', '', True, 'temporada'),
+    ('Cidade Invisivel', 'Cidade Invisivel 2 Temporada Nacional', '', True, 'temporada'),
+    ('Breaking Bad', 'Breaking Bad S02 Completa 1080p', '', True, 'temporada'),
+    ('Breaking Bad', 'Breaking Bad S01E05 1080p Dublado', '', True, 'episodio avulso'),
+    ('The Office', 'The Office 9 Temporada Completa Legendado', '', True, 'temporada'),
+    ('Taken', 'Taken 2 2012 1080p', '', False, 'sequencia sem temporada'),
+    ('Gladiator', 'Gladiator II 2024 1080p', '', False, 'sequencia sem temporada'),
+    ('Dune', 'Dune Part Two 2024 1080p', '', False, 'sequencia sem temporada'),
+    ('Toy Story 3', 'Toy Story 4 2019 1080p', '', False, 'numero da obra'),
+    ('The Thing 1982', 'The Thing 2011 1080p', '', False, 'ano divergente'),
+    ('Up', 'Superman Returns 1080p', 'https://up.example.invalid/superman-returns/', False, 'host'),
+    ('Titanic', 'Avatar 2009', 'https://s.invalid/avatar?busca=titanic', False, 'query string'),
+    ('Interstellar', 'Interestelar 2014 Dublado', '', True, 'traducao'),
+    ('Alien', 'Aliens 1986 1080p', '', True, 'morfologia'),
+    ('The Batman', 'Batman 2022 1080p', '', True, 'artigo'),
+    ('Up', 'Up - Altas Aventuras 1080p', '', True, 'subtitulo'),
+    ('Titanic', 'Titanic 1997 1080p Dublado', '', True, 'ano no candidato'),
+    ('Blade Runner', 'Download Torrent', 'https://s.invalid/blade-runner-1982-1080p/', True, 'slug')
+]
+
+
+@pytest.mark.parametrize("query,titulo,url,esperado,grupo", CORPUS_SERIES)
+def test_pacotes_de_temporada_e_series(query, titulo, url, esperado, grupo):
+    """
+    Regressão pega pelo próprio corpus: a regra de sequência olhava o token
+    seguinte ao título, e num pacote de temporada esse token é o NÚMERO DA
+    TEMPORADA — "Breaking Bad 2 Temporada Completa" normaliza para
+    "breaking bad 2", porque `temporada` e `completa` são ruído de release.
+
+    A primeira versão desta PR rejeitava 6 de 8 pacotes de temporada. São
+    eles que atendem a maioria das buscas de série, porque poucos releases
+    PT-BR publicam episódio avulso. Quem valida a temporada certa é
+    `matches_episode`, chamado logo depois nos scrapers; a relevância só
+    confirma que é a obra certa.
+
+    Os casos com `esperado=False` garantem que a exceção de temporada não
+    virou bypass geral.
+    """
+    assert is_relevant_release(query, titulo, url) is esperado, grupo
+
+
 @pytest.mark.parametrize("query,titulo,url,esperado,grupo", CORPUS)
 def test_corpus_de_relevancia(query, titulo, url, esperado, grupo):
     assert is_relevant_release(query, titulo, url) is esperado, grupo

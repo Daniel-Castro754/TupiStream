@@ -53,6 +53,35 @@ _MARCADORES_DE_SEQUENCIA = {
 
 _ANO = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 
+# Sinal de que o candidato e pacote/lancamento de TEMPORADA, nao um filme.
+# Detectado no texto BRUTO porque normalize_release_title remove "temporada"
+# e "completa" como ruido de release — depois da normalizacao o numero da
+# temporada fica solto e e indistinguivel de numero de sequencia.
+_SINAL_DE_TEMPORADA = re.compile(
+    r"\btemporada\b|\bseason\b|\bcomplet[ao]\b|\bcomplete\b"
+    r"|(?<![a-z0-9])s\d{1,2}(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def _tem_sinal_de_temporada(texto_bruto: str) -> bool:
+    """
+    True quando o candidato se anuncia como temporada de serie.
+
+    Necessario porque _e_continuacao_do_titulo olha o token seguinte ao
+    titulo, e num pacote de temporada esse token e o NUMERO DA TEMPORADA:
+
+        "Breaking Bad 2 Temporada Completa" -> norm "breaking bad 2"
+        "The Boys 4 Temporada 1080p"        -> norm "the boys 4"
+
+    Sem esta excecao, a regra de sequencia rejeita todo pacote de temporada
+    — e sao eles que atendem a maioria das buscas de serie, porque poucos
+    releases PT-BR publicam episodio avulso. Quem valida a temporada certa
+    e matches_episode, chamado logo depois nos scrapers; a relevancia so
+    precisa confirmar que e a OBRA certa.
+    """
+    return bool(_SINAL_DE_TEMPORADA.search(unquote(texto_bruto or "")))
+
 
 def _caminho_da_url(url: str) -> str:
     """
@@ -194,7 +223,11 @@ def is_relevant_release(query: str, candidate_title: str, candidate_url: str = "
         return False
 
     if _contem_frase(query_norm, candidate_norm):
-        # O candidato contém o título buscado — mas pode ser a sequência dele.
+        # Pacote de temporada: o número após o título é a temporada, não
+        # número de sequência. matches_episode valida qual temporada é.
+        if _tem_sinal_de_temporada(candidato_bruto):
+            return True
+        # Fora disso, o candidato contém o título — mas pode ser a sequência.
         return not _e_continuacao_do_titulo(query_norm, candidate_norm)
 
     if _contem_frase(candidate_norm, query_norm):
