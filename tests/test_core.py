@@ -100,19 +100,28 @@ class TestFormatarStream:
             has_play_url=True,
             stream_url="http://exemplo/play/abc",
         )
-        assert result.behaviorHints.get("notWebReady") is True
 
     def test_rd_resolvido_tem_binge_group(self):
-        """RD resolvido → behaviorHints com bingeGroup"""
+        """
+        REVISTO. Este teste fixava `bingeGroup = f"rd-{info_hash[:8]}"`, que
+        era unico por torrent — e por isso NUNCA casava com o episodio
+        seguinte, anulando o proposito do campo. O grupo agora vem de
+        qualidade + idioma, que sao estaveis entre episodios.
+        """
+        from app.services.stream_aggregator import _binge_group
+
         torrent = _make_torrent()
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            stream_url="http://localhost/play/x"
+            stream_url="http://exemplo/play/abc",
         )
-        assert "bingeGroup" in result.behaviorHints
-        assert result.behaviorHints["bingeGroup"].startswith("rd-")
 
+        grupo = result.behaviorHints["bingeGroup"]
+        assert grupo == _binge_group(torrent, "rd")
+        assert torrent.info_hash[:8] not in grupo, (
+            "o grupo nao pode depender do hash — e isso que o quebrava entre episodios"
+        )
     def test_name_title_filme_4k_ficam_mais_ricos(self):
         torrent = _make_torrent(
             title="Filme.Exemplo.2024.2160p.WEB-DL.DV.HDR.HEVC.Atmos.Dublado",
