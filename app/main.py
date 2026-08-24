@@ -35,9 +35,14 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     yield
     # Shutdown
+    # aggregator.close() fecha o httpx.AsyncClient de cada scraper ativo.
+    # Existia desde sempre e nunca era chamado: os clientes ficavam abertos
+    # ate o processo morrer, vazando sockets a cada restart do container.
+    # Vem antes do cache porque os scrapers nao dependem dele no shutdown.
+    await aggregator.close()
     await cache.delete_expired()
     await cache.close()
-    logger.info("Cache fechado.")
+    logger.info("Agregador e cache fechados.")
 
 
 # Cria a aplicação FastAPI
@@ -99,6 +104,6 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.HOST,
         port=settings.PORT,
-        log_level=settings.LOG_LEVEL,
+        log_level=settings.LOG_LEVEL.lower(),  # uvicorn so aceita minusculo
         reload=True,
     )

@@ -1,0 +1,327 @@
+name: AI Review Existing PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Numero da pull request existente
+        required: true
+        type: string
+      reviewer_1:
+        description: Primeiro revisor
+        required: true
+        default: gemini
+        type: choice
+        options:
+          - gemini
+          - codex
+          - claude
+          - none
+      reviewer_2:
+        description: Segundo revisor
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - gemini
+          - codex
+          - claude
+
+permissions: {}
+
+jobs:
+  validate_pr:
+    name: Validar PR
+    if: github.actor == 'Daniel-Castro754'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      branch_name: ${{ steps.meta.outputs.branch_name }}
+      head_sha: ${{ steps.meta.outputs.head_sha }}
+
+    steps:
+      - name: Validar PR e origem
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PR_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          STATE="$(printf '%s' "$PR_JSON" | jq -r '.state')"
+          HEAD_REPO="$(printf '%s' "$PR_JSON" | jq -r '.head.repo.full_name')"
+          HEAD_REF="$(printf '%s' "$PR_JSON" | jq -r '.head.ref')"
+          HEAD_SHA="$(printf '%s' "$PR_JSON" | jq -r '.head.sha')"
+
+          [ "$STATE" = "open" ] || { echo "PR #${PR_NUMBER} nao esta aberta." >&2; exit 1; }
+          [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ] || {
+            echo "Por seguranca, este workflow so revisa PRs cuja branch pertence ao proprio repositorio." >&2
+            echo "Origem recebida: $HEAD_REPO" >&2
+            exit 1
+          }
+
+          echo "branch_name=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "PR #${PR_NUMBER}: branch ${HEAD_REF}, commit ${HEAD_SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+  review:
+    name: Revisar ${{ matrix.slot }}
+    needs: validate_pr
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        slot:
+          - reviewer_1
+          - reviewer_2
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      SELECTED_REVIEWER: ${{ matrix.slot == 'reviewer_1' && inputs.reviewer_1 || inputs.reviewer_2 }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      BRANCH_NAME: ${{ needs.validate_pr.outputs.branch_name }}
+      HEAD_SHA: ${{ needs.validate_pr.outputs.head_sha }}
+
+    steps:
+      - name: Registrar slot sem revisor
+        if: env.SELECTED_REVIEWER == 'none'
+        run: echo "${{ matrix.slot }} desativado." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validar credencial do revisor
+        if: env.SELECTED_REVIEWER != 'none'
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SELECTED_REVIEWER" in
+            codex)
+              [ -n "$OPENAI_KEY" ] || { echo 'OPENAI_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            gemini)
+              [ -n "$GEMINI_KEY" ] || { echo 'GEMINI_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+            claude)
+              [ -n "$ANTHROPIC_KEY" ] || { echo 'ANTHROPIC_API_KEY nao configurada.' >&2; exit 1; }
+              ;;
+          esac
+
+      - name: Verificar review existente para este commit
+        id: dedupe
+        if: env.SELECTED_REVIEWER != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLOT: ${{ matrix.slot }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARKER="<!-- ai-review:${HEAD_SHA}:${SLOT}:${SELECTED_REVIEWER} -->"
+          EXISTING="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -n 1 || true)"
+
+          if [ -n "$EXISTING" ]; then
+            echo "already_done=true" >> "$GITHUB_OUTPUT"
+            echo "Este provider ja revisou este commit neste slot; nenhum token sera consumido." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "already_done=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "marker=$MARKER" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout da branch da PR
+        if: env.SELECTED_REVIEWER != 'none' && steps.dedupe.outputs.already_done != 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate_pr.outputs.branch_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Preparar contexto de review
+        if: env.SELECTED_REVIEWER != 'none' && steps.dedupe.outputs.already_done != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '# Pull request metadata'
+            gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json number,title,body,baseRefName,headRefName,files
+            echo
+            echo '# Pull request diff'
+            gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY"
+          } > AI_REVIEW_CONTEXT.md
+
+      - name: Codex - review read-only
+        id: review_codex
+        if: env.SELECTED_REVIEWER == 'codex' && steps.dedupe.outputs.already_done != 'true'
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':read-only'
+          model: ${{ vars.AI_CODEX_MODEL }}
+          prompt: |
+            Read `.ai/prompts/review.md` and `AI_REVIEW_CONTEXT.md`.
+
+            Review only the change described by the PR context. Do not modify files,
+            commit, push, merge, or use network access. Focus on correctness,
+            regressions, security/privacy, compatibility, missing tests, edge cases,
+            performance regressions, and unnecessary complexity.
+
+            Classify meaningful findings as critical/high/medium/low. If there are no
+            meaningful findings, say so explicitly. Return only the review text.
+
+      - name: Publicar review do Codex
+        if: env.SELECTED_REVIEWER == 'codex' && steps.dedupe.outputs.already_done != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_TEXT: ${{ steps.review_codex.outputs.final-message }}
+          SLOT: ${{ matrix.slot }}
+          MARKER: ${{ steps.dedupe.outputs.marker }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "$MARKER"
+            echo "## Codex review (${SLOT})"
+            echo
+            printf '%s\n' "$REVIEW_TEXT"
+          } > /tmp/review-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/review-comment.md
+
+      - name: Gemini - review read-only
+        id: review_gemini
+        if: env.SELECTED_REVIEWER == 'gemini' && steps.dedupe.outputs.already_done != 'true'
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ vars.AI_GEMINI_MODEL }}
+          settings: |-
+            {
+              "model": {
+                "maxSessionTurns": 12
+              },
+              "telemetry": {
+                "enabled": false
+              },
+              "tools": {
+                "core": [
+                  "read_file",
+                  "read_many_files",
+                  "list_directory",
+                  "glob",
+                  "grep_search"
+                ]
+              }
+            }
+          prompt: |-
+            Read `.ai/prompts/review.md` and `AI_REVIEW_CONTEXT.md`.
+
+            Review only the change described by the PR context. This is strictly
+            READ-ONLY. Do not modify files, commit, push, merge, or use shell/network
+            tools. Focus on bugs, edge cases, regressions, test gaps, security/privacy,
+            compatibility, and performance.
+
+            Classify meaningful findings as critical/high/medium/low. If there are no
+            meaningful findings, say so explicitly. Return only the review text.
+
+      - name: Publicar review do Gemini
+        if: env.SELECTED_REVIEWER == 'gemini' && steps.dedupe.outputs.already_done != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_TEXT: ${{ steps.review_gemini.outputs.summary }}
+          SLOT: ${{ matrix.slot }}
+          MARKER: ${{ steps.dedupe.outputs.marker }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "$MARKER"
+            echo "## Gemini review (${SLOT})"
+            echo
+            printf '%s\n' "$REVIEW_TEXT"
+          } > /tmp/review-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/review-comment.md
+
+      - name: Claude - review read-only
+        if: env.SELECTED_REVIEWER == 'claude' && steps.dedupe.outputs.already_done != 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Read `.ai/prompts/review.md` and `AI_REVIEW_CONTEXT.md`.
+
+            Review only the change described by the PR context. This is READ-ONLY.
+            Do not edit files, commit, push, merge, change branches, or change PR state.
+
+            Focus on correctness, regressions, security/privacy, compatibility, missing
+            tests, edge cases, performance, and unnecessary complexity. Classify findings
+            as critical/high/medium/low. If no meaningful issues are found, say so.
+
+            Post exactly one top-level comment to PR #${{ inputs.pr_number }} using
+            `gh pr comment`. The FIRST line of the comment must be exactly:
+            `${{ steps.dedupe.outputs.marker }}`
+            The second line must be `## Claude review (${{ matrix.slot }})`.
+          claude_args: ${{ vars.AI_CLAUDE_MODEL != '' && format('--max-turns 10 --model {0}', vars.AI_CLAUDE_MODEL) || '--max-turns 10' }}
+          settings: |-
+            {
+              "permissions": {
+                "allow": ["Read", "Glob", "Grep", "Bash(gh pr comment:*)"],
+                "deny": ["Write", "Edit", "WebFetch", "WebSearch", "Bash(git:*)"]
+              }
+            }
+
+      - name: Remover contexto temporario
+        if: always() && env.SELECTED_REVIEWER != 'none' && steps.dedupe.outputs.already_done != 'true'
+        run: rm -f AI_REVIEW_CONTEXT.md
+
+  review_gate:
+    name: Human review gate
+    needs:
+      - validate_pr
+      - review
+    if: always() && needs.validate_pr.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Publicar status da revisao manual
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEWER_1: ${{ inputs.reviewer_1 }}
+          REVIEWER_2: ${{ inputs.reviewer_2 }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MARKER="<!-- ai-existing-pr-review-status:${GITHUB_RUN_ID} -->"
+          EXISTING="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -n 1 || true)"
+
+          if [ -n "$EXISTING" ]; then
+            exit 0
+          fi
+
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${MARKER}
+          ## AI review status
+
+          - Reviewer 1: **${REVIEWER_1}**
+          - Reviewer 2: **${REVIEWER_2}**
+          - Review jobs: **${REVIEW_RESULT}**
+
+          This workflow only reviews an existing PR. Merge remains a human decision."
