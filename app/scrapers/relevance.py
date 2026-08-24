@@ -39,6 +39,24 @@ def normalize_release_title(value: str) -> str:
     return " ".join(cleaned)
 
 
+def _contem_frase(agulha: str, palheiro: str) -> bool:
+    """
+    Contenção com fronteira de palavra, não de caractere.
+
+    A versão anterior usava `agulha in palheiro` direto, o que compara
+    caracteres: "up" está contido em "superman returns", "her" em
+    "sherlock holmes", "cars" em "oscars", "room" em "mushroom". Como essa
+    era a PRIMEIRA checagem de is_relevant_release, qualquer título curto
+    aceitava candidatos sem nenhuma relação — e o filtro de relevância,
+    que existe justamente para barrar falso positivo grosseiro, deixava
+    passar o caso mais grosseiro de todos.
+
+    Envolver os dois lados em espaços transforma a checagem em "esta
+    sequência de palavras aparece inteira no candidato".
+    """
+    return f" {agulha} " in f" {palheiro} "
+
+
 def is_relevant_release(query: str, candidate_title: str, candidate_url: str = "") -> bool:
     """
     Rejeita falsos positivos grosseiros sem exigir igualdade literal.
@@ -53,7 +71,7 @@ def is_relevant_release(query: str, candidate_title: str, candidate_url: str = "
     if not query_norm or not candidate_norm:
         return False
 
-    if query_norm in candidate_norm or candidate_norm in query_norm:
+    if _contem_frase(query_norm, candidate_norm) or _contem_frase(candidate_norm, query_norm):
         return True
 
     query_tokens = query_norm.split()
