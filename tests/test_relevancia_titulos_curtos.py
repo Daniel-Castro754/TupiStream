@@ -34,7 +34,12 @@ CASOS = [
     ('Interstellar', 'Zoey 102 1080p', False),
     ('Titanic', 'Titanic 1997 1080p Dublado', True),
     ('O Auto da Compadecida', 'O Auto da Compadecida 2000 Nacional', True),
-    ('Tropa de Elite', 'Tropa de Elite 2 - O Inimigo Agora e Outro', True),
+    # REVISTO. Na PR #15 este par estava marcado como True — eu o inclui
+    # como "titulo PT-BR longo" sem reparar que e uma SEQUENCIA. Buscar
+    # "Tropa de Elite" e receber "Tropa de Elite 2" e o mesmo falso positivo
+    # de "Taken" x "Taken 2": outro filme, outro hash, outro audio.
+    # A cobertura do caso legitimo esta em test_relevancia_identidade_da_obra.
+    ('Tropa de Elite', 'Tropa de Elite 2 - O Inimigo Agora e Outro', False),
 ]
 
 
