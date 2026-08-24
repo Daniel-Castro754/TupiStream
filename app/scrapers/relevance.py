@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from difflib import SequenceMatcher
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 # Termos de release que não ajudam a identificar a obra.
 _NOISE = {
@@ -39,6 +39,119 @@ def normalize_release_title(value: str) -> str:
     return " ".join(cleaned)
 
 
+# Numerais romanos usados como marcador de sequencia. "v" fica de fora de
+# proposito: aparece como "versus" ("Batman v Superman") e como letra solta,
+# entao incluir criaria falso negativo mais caro que o falso positivo que
+# evitaria.
+_NUMERAIS_ROMANOS = {"ii", "iii", "iv", "vi", "vii", "viii", "ix", "x"}
+
+# Palavras que marcam continuacao logo apos o titulo base.
+_MARCADORES_DE_SEQUENCIA = {
+    "part", "parte", "chapter", "capitulo", "episode", "episodio",
+    "volume", "vol",
+}
+
+_ANO = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+
+def _caminho_da_url(url: str) -> str:
+    """
+    Extrai apenas o path da URL para a comparacao de relevancia.
+
+    Antes a funcao concatenava a URL INTEIRA ao titulo e normalizava tudo
+    junto, entao host e query string injetavam tokens:
+
+        query="Up"       url="https://up.example/superman-returns/"
+            -> "up" vinha do DOMINIO e o Superman era aceito
+
+        query="Titanic"  url="https://site/avatar?busca=titanic"
+            -> "titanic" vinha da QUERY STRING e o Avatar era aceito
+
+    O slug do path e evidencia do titulo. Host e query string nao sao —
+    ambos sao controlados por quem monta a URL, nao pelo conteudo.
+    """
+    if not url:
+        return ""
+    try:
+        return urlsplit(url).path
+    except ValueError:
+        return ""
+
+
+def _identidade_numerica(tokens: list[str]) -> set[str]:
+    """
+    Numeros que fazem parte do NOME da obra.
+
+    Anos e resolucoes ja sairam em normalize_release_title, entao o que
+    sobra de numerico identifica a sequencia: o "3" de "Toy Story 3", o
+    "ii" de "Gladiator II".
+    """
+    return {t for t in tokens if t.isdigit() or t in _NUMERAIS_ROMANOS}
+
+
+def _numero_da_obra_confere(query_norm: str, candidate_norm: str) -> bool:
+    """
+    Se a query nomeia uma sequencia, o candidato precisa ter o mesmo numero.
+
+    "Toy Story 3" nao pode aceitar "Toy Story 4"; "Inside Out 2" nao pode
+    aceitar "Inside Out". Query sem numero nao restringe nada aqui — esse
+    caso e tratado por _e_continuacao_do_titulo.
+    """
+    numeros_query = _identidade_numerica(query_norm.split())
+    if not numeros_query:
+        return True
+    return numeros_query <= _identidade_numerica(candidate_norm.split())
+
+
+def _anos_explicitos(texto: str) -> set[str]:
+    return set(_ANO.findall(unquote(texto or "")))
+
+
+def _anos_divergem(query_bruta: str, candidato_bruto: str) -> bool:
+    """
+    True quando os dois lados declaram ano e nenhum coincide.
+
+    Cobre remake: "The Thing 1982" nao e "The Thing 2011". Se so um dos
+    lados tem ano, nao rejeita — "Titanic" deve continuar aceitando
+    "Titanic 1997", que e o caso normal de release.
+    """
+    anos_query = _anos_explicitos(query_bruta)
+    if not anos_query:
+        return False
+    anos_candidato = _anos_explicitos(candidato_bruto)
+    if not anos_candidato:
+        return False
+    return anos_query.isdisjoint(anos_candidato)
+
+
+def _e_continuacao_do_titulo(frase: str, candidate_norm: str) -> bool:
+    """
+    True quando o candidato e o titulo buscado MAIS um marcador de
+    continuacao imediatamente depois.
+
+        "Taken"     x "Taken 2"          -> digito
+        "Gladiator" x "Gladiator II"     -> numeral romano
+        "Dune"      x "Dune Part Two"    -> marcador
+
+    Sem isso, buscar por um filme devolve a sequencia dele — que e um
+    release diferente, com hash e audio diferentes.
+    """
+    tokens_frase = frase.split()
+    tokens = candidate_norm.split()
+    n = len(tokens_frase)
+    for i in range(len(tokens) - n + 1):
+        if tokens[i:i + n] != tokens_frase:
+            continue
+        seguinte = tokens[i + n] if i + n < len(tokens) else None
+        if seguinte and (
+            seguinte.isdigit()
+            or seguinte in _NUMERAIS_ROMANOS
+            or seguinte in _MARCADORES_DE_SEQUENCIA
+        ):
+            return True
+    return False
+
+
 def _contem_frase(agulha: str, palheiro: str) -> bool:
     """
     Contenção com fronteira de palavra, não de caractere.
@@ -65,13 +178,26 @@ def is_relevant_release(query: str, candidate_title: str, candidate_url: str = "
     ``Interstellar`` x ``Interestelar``, mas rejeita resultados sem relação,
     como ``Troy`` x ``Zoey 102``.
     """
+    candidato_bruto = f"{candidate_title} {_caminho_da_url(candidate_url)}"
     query_norm = normalize_release_title(query)
-    candidate_norm = normalize_release_title(f"{candidate_title} {candidate_url}")
+    candidate_norm = normalize_release_title(candidato_bruto)
 
     if not query_norm or not candidate_norm:
         return False
 
-    if _contem_frase(query_norm, candidate_norm) or _contem_frase(candidate_norm, query_norm):
+    # Portões de identidade da obra. Rodam ANTES de qualquer heurística de
+    # similaridade porque nenhuma medida de distância textual salva um
+    # candidato que é comprovadamente outro filme.
+    if not _numero_da_obra_confere(query_norm, candidate_norm):
+        return False
+    if _anos_divergem(query, candidato_bruto):
+        return False
+
+    if _contem_frase(query_norm, candidate_norm):
+        # O candidato contém o título buscado — mas pode ser a sequência dele.
+        return not _e_continuacao_do_titulo(query_norm, candidate_norm)
+
+    if _contem_frase(candidate_norm, query_norm):
         return True
 
     query_tokens = query_norm.split()
