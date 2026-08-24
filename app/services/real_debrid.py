@@ -7,7 +7,22 @@ import httpx
 logger = logging.getLogger(__name__)
 
 LINK_READY_RETRY_DELAYS: tuple[float, ...] = (0.75, 0.75)
-INVALID_FILE_EXTENSIONS = (".txt", ".nfo", ".srt", ".jpg", ".png", ".exe")
+# Allowlist de conteineres de video.
+#
+# Antes isto era uma blacklist de extensoes invalidas:
+#     (".txt", ".nfo", ".srt", ".jpg", ".png", ".exe")
+# Blacklist de formato e sempre incompleta. Releases de cena empacotados em
+# .rar/.r00/.zip passavam pelo filtro e, como para filmes a escolha e pelo
+# MAIOR arquivo, o .rar era justamente o escolhido: o Real-Debrid
+# desbloqueava um arquivo comprimido e o player quebrava na reproducao.
+#
+# Inverter para allowlist troca "esqueci de bloquear X" (quebra o playback)
+# por "esqueci de permitir Y" (cai no erro tratado de torrent indisponivel).
+VIDEO_FILE_EXTENSIONS = (
+    ".mkv", ".mp4", ".avi", ".m4v", ".mov", ".mpg", ".mpeg",
+    ".ts", ".m2ts", ".webm", ".wmv", ".flv", ".ogm", ".ogv",
+    ".divx", ".vob", ".rmvb", ".3gp", ".asf", ".mts",
+)
 INVALID_PATH_WORDS = ("sample", "trailer", "extras")
 
 _EPISODE_MARKER_PATTERNS = (
@@ -155,7 +170,7 @@ class RealDebridService:
             path = str(file_info.get("path") or "").lower()
             if not path:
                 continue
-            if any(path.endswith(ext) for ext in INVALID_FILE_EXTENSIONS):
+            if not path.endswith(VIDEO_FILE_EXTENSIONS):
                 continue
             if any(word in path for word in INVALID_PATH_WORDS):
                 continue

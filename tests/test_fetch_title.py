@@ -101,10 +101,13 @@ class TestFetchTitleOMDBFallback:
         cinemeta_vazio = _resp(200, {"meta": {}})
         omdb = _resp(200, {"Title": "Interstellar"})
 
-        # Loop do Cinemeta tenta [type, "movie", "series"] — com type="movie"
-        # isso vira 3 chamadas (movie, movie, series) antes de desistir e
-        # cair pro OMDB como a 4a chamada.
-        respostas = [cinemeta_vazio, cinemeta_vazio, cinemeta_vazio, omdb]
+        # Loop do Cinemeta tenta os content_types sem repetir: com type="movie"
+        # a lista [type, "movie", "series"] passa por dict.fromkeys e vira
+        # ["movie", "series"] — 2 chamadas antes de desistir e cair pro OMDB
+        # como a 3a. Antes eram 3 chamadas ao Cinemeta porque "movie" aparecia
+        # duas vezes e a MESMA URL era pedida de novo, gastando uma ida de rede
+        # dentro de um budget de 4s.
+        respostas = [cinemeta_vazio, cinemeta_vazio, omdb]
 
         with patch("httpx.AsyncClient", _client_mock(respostas)):
             original, ptbr = await agg._fetch_title(
@@ -160,7 +163,9 @@ class TestFetchTitleErroGeral:
         agg = _aggregator()
         cinemeta_vazio = _resp(200, {"meta": {}})
         omdb = _resp(200, {"Title": "Interstellar"})
-        respostas = [cinemeta_vazio, cinemeta_vazio, cinemeta_vazio, omdb]
+        # 2 chamadas ao Cinemeta (movie, series) + OMDB — ver comentario
+        # em TestFetchTitleOMDBFallback sobre a deduplicacao do content_type.
+        respostas = [cinemeta_vazio, cinemeta_vazio, omdb]
 
         with patch("httpx.AsyncClient", _client_mock(respostas)):
             original, ptbr = await agg._fetch_title(

@@ -77,8 +77,6 @@ class TestDeduplicacaoReconciliaMetadados:
         aggregator = self._aggregator()
         primeiro = _torrent(info_hash=" " + "A" * 40 + " ", source="Brazuca Torrents")
         segundo = _torrent(info_hash="a" * 40, source="Apache Torrent")
-        
-        main
 
         resultado = aggregator._deduplicate([primeiro, segundo])
 
