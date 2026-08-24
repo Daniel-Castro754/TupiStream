@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from difflib import SequenceMatcher
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 # Termos de release que não ajudam a identificar a obra.
 _NOISE = {
@@ -39,6 +39,86 @@ def normalize_release_title(value: str) -> str:
     return " ".join(cleaned)
 
 
+# Numerais romanos usados em sequencias de filme.
+_NUMERAIS_ROMANOS = frozenset({"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"})
+
+# Palavras que introduzem uma parte especifica de uma obra.
+_MARCADORES_DE_SEQUENCIA = frozenset({
+    "part", "parte", "chapter", "capitulo", "episode", "episodio", "vol", "volume",
+})
+
+_ANO = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+
+def _caminho_da_url(url: str) -> str:
+    """
+    Só o path da URL entra na comparação.
+
+    A versão anterior concatenava a URL inteira ao título antes de
+    normalizar, então host e query string injetavam tokens no candidato:
+
+      - `https://up.example/superman-returns/` fazia a busca por "Up"
+        aceitar "Superman Returns", porque o host virava o token "up";
+      - `.../avatar?busca=titanic` fazia "Titanic" aceitar "Avatar".
+
+    Um site cujo domínio contenha a palavra buscada casaria com tudo. O
+    path é a única parte da URL que descreve a obra — é onde vive o slug,
+    que é justamente o fallback que essa comparação quer aproveitar.
+    """
+    if not url:
+        return ""
+    return urlsplit(url).path
+
+
+def _anos(texto: str) -> set[str]:
+    """Anos de 4 dígitos no texto cru (a normalização os remove)."""
+    return set(_ANO.findall(unquote(texto or "")))
+
+
+def _numeros_da_obra(tokens: list[str]) -> set[str]:
+    """
+    Números que identificam a obra dentro do título já normalizado.
+
+    Anos e resoluções (1080p) foram removidos por normalize_release_title,
+    então o que sobra é numeração de sequência: o "3" de "Toy Story 3".
+    """
+    return {token for token in tokens if token.isdigit()}
+
+
+def _posicao_apos_frase(agulha: list[str], palheiro: list[str]) -> int | None:
+    """Índice logo após a ocorrência de `agulha` em `palheiro`, ou None."""
+    tamanho = len(agulha)
+    for inicio in range(len(palheiro) - tamanho + 1):
+        if palheiro[inicio:inicio + tamanho] == agulha:
+            return inicio + tamanho
+    return None
+
+
+def _proximo_token_marca_outra_parte(sufixo: list[str]) -> bool:
+    """
+    True quando o token LOGO APÓS o título buscado marca outra parte da obra.
+
+    "Taken" está inteiro dentro de "Taken 2", e "Gladiator" dentro de
+    "Gladiator II" — contenção por palavra, sozinha, aceita os dois. Um
+    número, numeral romano ou "Part/Parte/Chapter" imediatamente depois do
+    título indicam outro filme, não uma variação do mesmo.
+
+    Olha só o token seguinte, de propósito. Varrer o sufixo inteiro
+    rejeitaria "Inside Out 2 - Divertida Mente 2", onde o número reaparece
+    no título localizado. E subtítulo comum nunca dispara: "Up - Altas
+    Aventuras" e "It - A Coisa" seguem passando, porque o que vem depois é
+    texto, não numeração.
+    """
+    if not sufixo:
+        return False
+    seguinte = sufixo[0]
+    return (
+        seguinte.isdigit()
+        or seguinte in _NUMERAIS_ROMANOS
+        or seguinte in _MARCADORES_DE_SEQUENCIA
+    )
+
+
 def _contem_frase(agulha: str, palheiro: str) -> bool:
     """
     Contenção com fronteira de palavra, não de caractere.
@@ -65,17 +145,42 @@ def is_relevant_release(query: str, candidate_title: str, candidate_url: str = "
     ``Interstellar`` x ``Interestelar``, mas rejeita resultados sem relação,
     como ``Troy`` x ``Zoey 102``.
     """
+    caminho = _caminho_da_url(candidate_url)
+    candidate_bruto = f"{candidate_title} {caminho}"
+
     query_norm = normalize_release_title(query)
-    candidate_norm = normalize_release_title(f"{candidate_title} {candidate_url}")
+    candidate_norm = normalize_release_title(candidate_bruto)
 
     if not query_norm or not candidate_norm:
         return False
 
-    if _contem_frase(query_norm, candidate_norm) or _contem_frase(candidate_norm, query_norm):
-        return True
-
     query_tokens = query_norm.split()
     candidate_tokens = candidate_norm.split()
+
+    # Ano explícito dos dois lados e sem interseção: remake ou obra
+    # diferente. "The Thing 1982" não é "The Thing 2011". Ano só de um dos
+    # lados não decide nada — "Titanic" deve continuar aceitando
+    # "Titanic 1997".
+    anos_query = _anos(query)
+    anos_candidato = _anos(candidate_bruto)
+    if anos_query and anos_candidato and anos_query.isdisjoint(anos_candidato):
+        return False
+
+    # Numeração da obra pedida precisa estar presente no candidato:
+    # "Toy Story 3" não é "Toy Story 4" nem "Toy Story".
+    numeros_query = _numeros_da_obra(query_tokens)
+    if numeros_query and not numeros_query.issubset(_numeros_da_obra(candidate_tokens)):
+        return False
+
+    fim_da_frase = _posicao_apos_frase(query_tokens, candidate_tokens)
+    if fim_da_frase is not None:
+        # O título buscado aparece inteiro. Só aceita se o que vem depois
+        # não for marcação de outra parte da obra.
+        return not _proximo_token_marca_outra_parte(candidate_tokens[fim_da_frase:])
+
+    if _contem_frase(candidate_norm, query_norm):
+        return True
+
     query_set = set(query_tokens)
     candidate_set = set(candidate_tokens)
 
