@@ -104,11 +104,29 @@ Após fazer o deploy público (Railway/Render), qualquer pessoa pode usar o addo
 
 2. Cada usuário insere o próprio token Real-Debrid
 
-3. O addon funciona independente para cada usuário — o servidor
-   não armazena tokens, tudo passa pela URL
+3. O addon funciona independente para cada usuário — cada um usa o
+   próprio token Real-Debrid
 
-**Importante:** Nunca compartilhe sua URL de manifest diretamente.
-Ela contém seu token RD e permite streaming na sua conta.
+### Onde o seu token fica, de verdade
+
+Esta seção afirmava que "o servidor não armazena tokens". **Isso estava
+incorreto.** O comportamento real, hoje:
+
+- **O token vai no caminho da URL** (`/SEU-TOKEN/manifest.json`). Caminho de
+  URL aparece em log de acesso de proxy, no histórico do navegador e na URL
+  que o próprio Stremio guarda. HTTPS não protege isso: ele cifra o corpo,
+  não esconde o endereço.
+- **O servidor guarda o token por até 30 minutos.** Ao montar a lista de
+  streams, o addon cria uma sessão de playback por torrent, e cada uma
+  carrega uma cópia do token. Elas ficam em `data/cache.db`, em texto puro —
+  e no Render esse caminho é um disco persistente, que sobrevive a deploy.
+
+**Importante:** nunca compartilhe sua URL de manifest. Ela contém seu token
+e dá acesso de streaming à sua conta — compartilhe a página `/configure`.
+
+Se você já compartilhou uma URL de manifest, ou se ela apareceu em algum log
+que não é seu, **gere um token novo** em real-debrid.com/apitoken. Log e
+histórico antigos não têm como ser limpos retroativamente.
 
 ## Variáveis de ambiente
 
