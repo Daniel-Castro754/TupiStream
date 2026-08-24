@@ -84,8 +84,12 @@ def test_apenas_o_path_da_url_conta(query, titulo, url):
     """
     from app.scrapers.relevance import _caminho_da_url
 
-    assert query.lower() in url.lower(), "o caso só faz sentido se a query estiver na URL"
-    assert query.lower() not in _caminho_da_url(url).lower()
+    # O caso só faz sentido se a query aparecer na URL completa...
+    assert query.lower() in url.lower()
+    # ...vinda do host ou da query string, e não do path.
+    fora_do_path = url.lower().replace(_caminho_da_url(url).lower(), "", 1)
+    assert query.lower() in fora_do_path
+    # Mesmo assim, o candidato é recusado: só o path é evidência do título.
     assert is_relevant_release(query, titulo, url) is False
 
 
