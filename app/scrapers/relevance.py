@@ -12,6 +12,13 @@ _NOISE = {
     "legendada", "dual", "audio", "pt", "br", "web", "dl", "webrip",
     "bluray", "blu", "ray", "remux", "hdr", "dv", "dolby", "vision",
     "x264", "x265", "h264", "h265", "hevc", "aac", "atmos", "imax",
+    # Faltavam. "4k" nao casa o padrao \d{3,4}p, entao sobrevivia a
+    # normalizacao e derrubava a similaridade: "The Batman" REJEITAVA
+    # "Batman 2022 4K Dublado" porque ratio("the batman", "batman 4k")
+    # da 0,632, abaixo do limiar de 0,72. Perda silenciosa de resultado
+    # justamente na faixa de qualidade mais procurada.
+    "4k", "uhd", "hdtv", "dvdrip", "brrip", "bdrip", "ac3", "ddp",
+    "mkv", "mp4", "nacional",
 }
 
 
@@ -22,11 +29,12 @@ def normalize_release_title(value: str) -> str:
     value = "".join(ch for ch in value if not unicodedata.combining(ch))
     tokens = re.findall(r"[a-z0-9]+", value.lower())
 
+    # Dois passes. Primeiro tudo que e inequivocamente ruido de release;
+    # os anos ficam separados porque eles podem SER o titulo.
     cleaned: list[str] = []
+    anos: list[str] = []
     for token in tokens:
         if token in _NOISE:
-            continue
-        if re.fullmatch(r"(?:19|20)\d{2}", token):
             continue
         if re.fullmatch(r"\d{3,4}p", token):
             continue
@@ -34,7 +42,19 @@ def normalize_release_title(value: str) -> str:
             continue
         if re.fullmatch(r"e\d{1,3}", token):
             continue
+        if re.fullmatch(r"(?:19|20)\d{2}", token):
+            anos.append(token)
+            continue
         cleaned.append(token)
+
+    # Se sobrou alguma coisa, os anos eram ruido de release e ficam de fora.
+    # Se nao sobrou NADA, o ano ERA o titulo: "1917", "2012", "1984", "2046"
+    # viravam string vazia, e is_relevant_release rejeita de imediato quando
+    # a query normaliza vazia — apagao total nesses filmes em todas as fontes
+    # que usam o filtro de relevancia. `Baixar Torrent Dublado 1080p` continua
+    # virando string vazia, porque ali nao havia ano nenhum a recuperar.
+    if not cleaned:
+        cleaned = anos
 
     return " ".join(cleaned)
 
@@ -153,6 +173,20 @@ def _anos_divergem(query_bruta: str, candidato_bruto: str) -> bool:
     return anos_query.isdisjoint(anos_candidato)
 
 
+def _e_marcador_de_sequencia(token: str) -> bool:
+    """
+    True quando o token marca continuacao da obra.
+
+    Numero de sequencia e pequeno — "Taken 2", "Rocky 3", "Episodio 7". Um
+    numero de 4 digitos que sobreviveu a normalizacao e ano de lancamento
+    preservado pelo fallback de titulo-ano ("1917 2019" e o filme 1917 num
+    release de 2019), nao a sequencia "1917 parte 2019".
+    """
+    if token in _NUMERAIS_ROMANOS or token in _MARCADORES_DE_SEQUENCIA:
+        return True
+    return token.isdigit() and len(token) <= 2
+
+
 def _e_continuacao_do_titulo(frase: str, candidate_norm: str) -> bool:
     """
     True quando o candidato e o titulo buscado MAIS um marcador de
@@ -172,11 +206,7 @@ def _e_continuacao_do_titulo(frase: str, candidate_norm: str) -> bool:
         if tokens[i:i + n] != tokens_frase:
             continue
         seguinte = tokens[i + n] if i + n < len(tokens) else None
-        if seguinte and (
-            seguinte.isdigit()
-            or seguinte in _NUMERAIS_ROMANOS
-            or seguinte in _MARCADORES_DE_SEQUENCIA
-        ):
+        if seguinte and _e_marcador_de_sequencia(seguinte):
             return True
     return False
 
