@@ -61,7 +61,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
             stream_url="http://localhost:8000/play/test-id"
         )
         assert result.url == "http://localhost:8000/play/test-id"
@@ -76,7 +75,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=False,
-            tem_rd=False,
             stream_url=None
         )
         assert result.infoHash == torrent.info_hash
@@ -85,29 +83,45 @@ class TestFormatarStream:
         assert "infoHash" in dumped
         assert "url" not in dumped
 
-    def test_fallback_torrent_com_rd_tem_not_web_ready(self):
-        """Usuário tem RD mas stream é fallback → notWebReady=True"""
-        torrent = _make_torrent()
-        result = self.agg._formatar_stream(
-            torrent=torrent,
-            has_play_url=False,
-            tem_rd=True,
-            stream_url=None
-        )
-        assert result.behaviorHints.get("notWebReady") is True
+    def test_stream_rd_tem_not_web_ready(self):
+        """
+        REVISTO. Este teste fixava um ramo INALCANCAVEL: `tem_rd=True` so era
+        passado junto com `stream_url`, e nesse caminho _formatar_stream
+        retorna antes de consultar o parametro. Ou seja, a flag nunca chegava
+        a nenhum stream em producao — o teste era a unica coisa que a mantinha
+        viva.
 
-    def test_rd_resolvido_tem_binge_group(self):
-        """RD resolvido → behaviorHints com bingeGroup"""
+        A flag foi para onde sempre quis estar: no stream do Real-Debrid, que
+        resolve para um link HTTP frequentemente MKV e nao toca em navegador.
+        """
         torrent = _make_torrent()
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
-            stream_url="http://localhost/play/x"
+            stream_url="http://exemplo/play/abc",
         )
-        assert "bingeGroup" in result.behaviorHints
-        assert result.behaviorHints["bingeGroup"].startswith("rd-")
 
+    def test_rd_resolvido_tem_binge_group(self):
+        """
+        REVISTO. Este teste fixava `bingeGroup = f"rd-{info_hash[:8]}"`, que
+        era unico por torrent — e por isso NUNCA casava com o episodio
+        seguinte, anulando o proposito do campo. O grupo agora vem de
+        qualidade + idioma, que sao estaveis entre episodios.
+        """
+        from app.services.stream_aggregator import _binge_group
+
+        torrent = _make_torrent()
+        result = self.agg._formatar_stream(
+            torrent=torrent,
+            has_play_url=True,
+            stream_url="http://exemplo/play/abc",
+        )
+
+        grupo = result.behaviorHints["bingeGroup"]
+        assert grupo == _binge_group(torrent, "rd")
+        assert torrent.info_hash[:8] not in grupo, (
+            "o grupo nao pode depender do hash — e isso que o quebrava entre episodios"
+        )
     def test_name_title_filme_4k_ficam_mais_ricos(self):
         torrent = _make_torrent(
             title="Filme.Exemplo.2024.2160p.WEB-DL.DV.HDR.HEVC.Atmos.Dublado",
@@ -120,7 +134,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
             stream_url="http://localhost/play/4k"
         )
         assert result.name == "BR Streams • 4K DV HDR • RD"
@@ -142,7 +155,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=False,
-            tem_rd=False,
             stream_url=None
         )
         assert result.name == "BR Streams • 1080p Dual"
@@ -164,7 +176,6 @@ class TestFormatarStream:
         result = self.agg._formatar_stream(
             torrent=torrent,
             has_play_url=True,
-            tem_rd=True,
             stream_url="http://localhost/play/serie"
         )
         assert result.name == "BR Streams • 720p • RD"
