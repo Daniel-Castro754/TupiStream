@@ -3,7 +3,9 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlsplit
 
+from app.episode_matching import matches_explicit_episode
 from app.models.config import settings
 from app.models.torrent import StreamResult, TorrentResult
 from app.scrapers.apache_torrent import ApacheTorrentScraper
@@ -33,6 +35,53 @@ QUALITY_ORDER: dict[str, int] = {
     "480p": 3,
     "Desconhecida": 4,
 }
+
+MAX_P2P_SOURCES = 30
+
+
+def _p2p_sources(torrent: TorrentResult) -> list[str]:
+    """Preserva sources da origem e trackers `tr=` do magnet, sem duplicatas."""
+    candidates = list(torrent.sources)
+    try:
+        trackers = parse_qs(urlsplit(torrent.magnet).query).get("tr", [])
+    except ValueError:
+        trackers = []
+    candidates.extend(f"tracker:{tracker}" for tracker in trackers)
+
+    result: list[str] = []
+    for source in candidates:
+        if not isinstance(source, str):
+            continue
+        if not source.startswith(("tracker:http://", "tracker:https://", "tracker:udp://", "dht:")):
+            continue
+        if source not in result:
+            result.append(source)
+        if len(result) >= MAX_P2P_SOURCES:
+            break
+    return result
+
+
+def _p2p_safe_for_request(
+    torrent: TorrentResult,
+    content_type: str,
+    season: int | None,
+    episode: int | None,
+) -> bool:
+    """
+    Evita servir o episódio errado no modo P2P.
+
+    Sem `fileIdx`, a especificação do Stremio escolhe o MAIOR arquivo do
+    torrent. Isso é correto para release de episódio único e incorreto para
+    pacote de temporada. RD pode selecionar o arquivo; P2P não pode.
+    """
+    if content_type != "series":
+        return True
+    if torrent.file_idx is not None:
+        return True
+    if season is None or episode is None:
+        return False
+    return matches_explicit_episode(torrent.title, season, episode)
+
 
 # ── Scraper Registry ──
 SCRAPER_REGISTRY: list[tuple[str, type[BaseScraper]]] = [
@@ -541,8 +590,10 @@ class StreamAggregator:
         rd_streams: list[StreamResult] = []
         p2p_streams: list[StreamResult] = []
         play_sessions_count = 0
+        p2p_suppressed_count = 0
 
         for torrent in torrents_ordenados:
+            p2p_safe = _p2p_safe_for_request(torrent, type, season, episode)
             sessao_gravada = False
             play_id = ""
 
@@ -587,7 +638,7 @@ class StreamAggregator:
                 )
                 play_sessions_count += 1
 
-                if include_p2p:
+                if include_p2p and p2p_safe:
                     p2p_streams.append(
                         self._formatar_stream(
                             torrent=torrent,
@@ -595,15 +646,19 @@ class StreamAggregator:
                             p2p_label=True,
                         )
                     )
-            else:
+                elif include_p2p:
+                    p2p_suppressed_count += 1
+            elif p2p_safe:
                 # Sem token, ou quando uma fonte não trouxe magnet, mantém o
-                # fallback P2P existente.
+                # fallback P2P existente somente quando o arquivo é inequívoco.
                 p2p_streams.append(
                     self._formatar_stream(
                         torrent=torrent,
                         has_play_url=False,
                     )
                 )
+            else:
+                p2p_suppressed_count += 1
 
         # RD primeiro para preservar a experiência premium; P2P vem abaixo.
         streams = rd_streams + p2p_streams
@@ -612,7 +667,8 @@ class StreamAggregator:
         logger.info(
             f"[{req_id}] Concluído: {len(streams)} streams "
             f"({len(rd_streams)} RD, {len(p2p_streams)} P2P), "
-            f"{play_sessions_count} play sessions, {elapsed_total:.0f}ms"
+            f"{play_sessions_count} play sessions, "
+            f"{p2p_suppressed_count} P2P ambiguos omitidos, {elapsed_total:.0f}ms"
         )
 
         return streams
@@ -892,6 +948,14 @@ class StreamAggregator:
                     sources.append(source)
 
             updates: dict = {"source": " + ".join(sources)}
+            if existing.file_idx is None and torrent.file_idx is not None:
+                updates["file_idx"] = torrent.file_idx
+            merged_sources = list(existing.sources)
+            for peer_source in torrent.sources:
+                if peer_source not in merged_sources:
+                    merged_sources.append(peer_source)
+            if merged_sources != existing.sources:
+                updates["sources"] = merged_sources[:MAX_P2P_SOURCES]
             if existing.size is None and torrent.size is not None:
                 updates["size"] = torrent.size
             # `(a or 0) > (b or 0)` perdia o zero CONFIRMADO: com
@@ -1011,6 +1075,8 @@ class StreamAggregator:
             name=build_stream_name(torrent, has_play_url, p2p=p2p_label),
             title=build_stream_title(torrent, has_play_url, p2p=p2p_label),
             infoHash=torrent.info_hash,
+            fileIdx=torrent.file_idx,
+            sources=_p2p_sources(torrent) or None,
             behaviorHints=behavior,
         )
 

@@ -5,6 +5,8 @@ import unicodedata
 from difflib import SequenceMatcher
 from urllib.parse import unquote, urlsplit
 
+from app.episode_matching import extract_explicit_episode
+
 # Termos de release que não ajudam a identificar a obra.
 # Canal de audio: um digito, ponto, um digito. Pega 5.1, 7.1, 2.0, 6.1 e o
 # sufixo de "DDP5.1"/"AC3 5.1". Nao pega ano nem resolucao.
@@ -342,16 +344,9 @@ def is_relevant_release(query: str, candidate_title: str, candidate_url: str = "
     return SequenceMatcher(None, query_norm, candidate_norm).ratio() >= 0.72
 
 
-# Padrões de season/episode em releases PT-BR e internacionais.
-_EP_PATTERNS = [
-    re.compile(r"s(\d{1,2})e(\d{1,3})", re.IGNORECASE),
-    re.compile(r"(\d{1,2})x(\d{1,3})", re.IGNORECASE),
-    re.compile(r"temporada\s*(\d{1,2}).{0,15}?epis[oó]dio\s*(\d{1,3})", re.IGNORECASE),
-]
-
 # Marca pacote de temporada completa (sem episódio específico).
 _SEASON_PACK_PATTERNS = [
-    re.compile(r"s(\d{1,2})(?!e\d)", re.IGNORECASE),
+    re.compile(r"(?<![a-z0-9])s(\d{1,2})(?!e\d)", re.IGNORECASE),
     re.compile(r"(\d{1,2})[ªa]?\s*temporada", re.IGNORECASE),
     re.compile(r"temporada\s*(\d{1,2})", re.IGNORECASE),
     re.compile(r"complet[ao]", re.IGNORECASE),
@@ -377,11 +372,9 @@ def matches_episode(candidate_title: str, season: int | None, episode: int | Non
 
     texto = candidate_title or ""
 
-    for pattern in _EP_PATTERNS:
-        match = pattern.search(texto)
-        if match:
-            found_season, found_episode = int(match.group(1)), int(match.group(2))
-            return found_season == season and found_episode == episode
+    explicit_episode = extract_explicit_episode(texto)
+    if explicit_episode is not None:
+        return explicit_episode == (season, episode)
 
     for pattern in _SEASON_PACK_PATTERNS:
         match = pattern.search(texto)

@@ -94,6 +94,21 @@ class BrazucaAddonScraper(BaseScraper):
         # Tenta extrair tamanho do título (ex: "1.4 GB" no texto)
         size = self._extrair_tamanho_titulo(titulo)
 
+        file_idx_raw = stream.get("fileIdx")
+        file_idx = (
+            file_idx_raw
+            if isinstance(file_idx_raw, int)
+            and not isinstance(file_idx_raw, bool)
+            and file_idx_raw >= 0
+            else None
+        )
+        sources = [
+            source
+            for source in stream.get("sources", [])[:30]
+            if isinstance(source, str)
+            and source.startswith(("tracker:", "dht:"))
+        ]
+
         return TorrentResult(
             title=titulo,
             info_hash=info_hash,
@@ -103,6 +118,8 @@ class BrazucaAddonScraper(BaseScraper):
             source=self.name,
             size=size,
             seeders=None,
+            file_idx=file_idx,
+            sources=sources,
         )
 
     def _detectar_qualidade(self, titulo: str) -> str:

@@ -1,9 +1,10 @@
 import asyncio
 import logging
-import re
 from dataclasses import dataclass
 
 import httpx
+
+from app.episode_matching import has_explicit_episode_marker, matches_explicit_episode
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +31,6 @@ INVALID_PATH_WORDS = ("sample", "trailer", "extras")
 # chamada de 15s faltando 2s de orcamento so joga fora o trabalho ja feito.
 MARGEM_PARA_NOVA_CONSULTA_SECONDS = 1.0
 
-_EPISODE_MARKER_PATTERNS = (
-    re.compile(r"(?<![a-z0-9])s\d{1,2}e\d{1,3}(?!\d)", re.IGNORECASE),
-    re.compile(r"(?<!\d)\d{1,2}x\d{1,3}(?!\d)", re.IGNORECASE),
-    re.compile(r"(?<![a-z0-9])t\d{1,2}e\d{1,3}(?!\d)", re.IGNORECASE),
-    re.compile(
-        r"temporada\s*\d{1,2}.{0,20}?epis[oó]dio\s*\d{1,3}",
-        re.IGNORECASE,
-    ),
-)
-
-
 def _summarize_http_error(exc: httpx.HTTPStatusError) -> str:
     """Resume erro HTTP sem expor URLs sensiveis ou payloads."""
     response = exc.response
@@ -60,30 +50,6 @@ def _parse_episode_target(stremio_id: str) -> tuple[int, int] | None:
     if season < 0 or episode < 0:
         return None
     return season, episode
-
-
-def _path_has_episode_marker(path: str) -> bool:
-    return any(pattern.search(path) for pattern in _EPISODE_MARKER_PATTERNS)
-
-
-def _path_matches_episode(path: str, season: int, episode: int) -> bool:
-    normalized = path.lower()
-    patterns = (
-        re.compile(
-            rf"(?<![a-z0-9])s0*{season}e0*{episode}(?!\d)",
-            re.IGNORECASE,
-        ),
-        re.compile(rf"(?<!\d)0*{season}x0*{episode}(?!\d)", re.IGNORECASE),
-        re.compile(
-            rf"(?<![a-z0-9])t0*{season}e0*{episode}(?!\d)",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            rf"temporada\s*0*{season}.{0,20}?epis[oó]dio\s*0*{episode}(?!\d)",
-            re.IGNORECASE,
-        ),
-    )
-    return any(pattern.search(normalized) for pattern in patterns)
 
 
 @dataclass
@@ -260,7 +226,7 @@ class RealDebridService:
         matching_files = [
             file_info
             for file_info in valid_files
-            if _path_matches_episode(str(file_info["path"]), season, episode)
+            if matches_explicit_episode(str(file_info["path"]), season, episode)
         ]
         if matching_files:
             # Pode haver duas versões do mesmo episódio; escolhe a maior delas.
@@ -272,7 +238,7 @@ class RealDebridService:
         # episódio; pacotes com vários arquivos nunca caem no "maior arquivo".
         if len(valid_files) == 1:
             only_file = valid_files[0]
-            if not _path_has_episode_marker(str(only_file["path"])):
+            if not has_explicit_episode_marker(str(only_file["path"])):
                 return str(only_file["id"])
 
         self._log(
