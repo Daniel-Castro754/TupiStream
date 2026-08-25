@@ -23,6 +23,7 @@ from app.services.stream_aggregator import (
     PLAY_SESSION_TTL_SECONDS,
     SearchBusyError,
     StreamAggregator,
+    parse_source_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,9 @@ ContentType = Literal["movie", "series"]
 TokenPath = Annotated[str, Path(min_length=1, max_length=256)]
 StreamIdPath = Annotated[str, Path(min_length=9, max_length=64)]
 PlayIdPath = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")]
+SourceIdsPath = Annotated[
+    str, Path(min_length=1, max_length=160, pattern=r"^[a-z0-9,-]+$")
+]
 _MOVIE_ID_RE = re.compile(r"^tt[0-9]{7,10}$")
 _SERIES_ID_RE = re.compile(r"^tt[0-9]{7,10}:[0-9]{1,4}:[0-9]{1,4}$")
 
@@ -101,7 +105,7 @@ class _PlayLocks:
     """
 
     def __init__(self) -> None:
-        self._locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+        self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
             weakref.WeakValueDictionary()
         )
         self._guard = asyncio.Lock()
@@ -169,6 +173,13 @@ async def _persistir_progresso(
         logger.warning(f"[{req_id}] [PLAY] progresso nao persistido: {exc}")
 
 
+def parse_selected_sources(raw: str) -> frozenset[str]:
+    try:
+        return parse_source_ids(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _play_ref(play_id: str) -> str:
     """Reduz o identificador nos logs para evitar ruido desnecessario."""
     return play_id[:8]
@@ -215,6 +226,105 @@ def _parse_stremio_id(id: str) -> tuple[str, int | None, int | None]:
             season = None
             episode = None
     return imdb_id, season, episode
+
+
+async def _get_selected_streams(
+    *,
+    source_ids: str,
+    rd_token: str | None,
+    content_type: ContentType,
+    stremio_id: str,
+    request: Request,
+    response: Response | None,
+    include_p2p: bool,
+) -> dict:
+    selected = parse_selected_sources(source_ids)
+    if response is not None and rd_token:
+        proteger_resposta_com_token(response)
+    _validate_stream_id(content_type, stremio_id)
+    req_id = uuid.uuid4().hex[:8]
+    set_req_id(req_id)
+    t0 = time.monotonic()
+    imdb_id, season, episode = _parse_stremio_id(stremio_id)
+    token = rd_token if rd_token and rd_token.lower() != "none" else None
+
+    streams = await _get_streams_with_capacity(
+        imdb_id=imdb_id,
+        stremio_id=stremio_id.replace(".json", ""),
+        type=content_type,
+        req_id=req_id,
+        rd_token=token,
+        include_p2p=include_p2p,
+        request_base_url=_request_base_url(request),
+        season=season,
+        episode=episode,
+        selected_sources=selected,
+    )
+    elapsed = (time.monotonic() - t0) * 1000
+    logger.info(
+        f"[{req_id}] [STREAM SELECTED] {content_type}/{imdb_id} -> "
+        f"{len(streams)} resultados, fontes={','.join(sorted(selected))} "
+        f"({elapsed:.0f}ms)"
+    )
+    return {"streams": [stream.model_dump(exclude_none=True) for stream in streams]}
+
+
+@router.get("/sources/{source_ids}/stream/{type}/{id}.json")
+async def get_streams_selected(
+    source_ids: SourceIdsPath,
+    type: ContentType,
+    id: StreamIdPath,
+    request: Request,
+) -> dict:
+    return await _get_selected_streams(
+        source_ids=source_ids,
+        rd_token=None,
+        content_type=type,
+        stremio_id=id,
+        request=request,
+        response=None,
+        include_p2p=False,
+    )
+
+
+@router.get("/sources/{source_ids}/hybrid/{rd_token}/stream/{type}/{id}.json")
+async def get_streams_selected_hybrid(
+    source_ids: SourceIdsPath,
+    rd_token: TokenPath,
+    type: ContentType,
+    id: StreamIdPath,
+    request: Request,
+    response: Response,
+) -> dict:
+    return await _get_selected_streams(
+        source_ids=source_ids,
+        rd_token=rd_token,
+        content_type=type,
+        stremio_id=id,
+        request=request,
+        response=response,
+        include_p2p=True,
+    )
+
+
+@router.get("/sources/{source_ids}/{rd_token}/stream/{type}/{id}.json")
+async def get_streams_selected_with_rd(
+    source_ids: SourceIdsPath,
+    rd_token: TokenPath,
+    type: ContentType,
+    id: StreamIdPath,
+    request: Request,
+    response: Response,
+) -> dict:
+    return await _get_selected_streams(
+        source_ids=source_ids,
+        rd_token=rd_token,
+        content_type=type,
+        stremio_id=id,
+        request=request,
+        response=response,
+        include_p2p=False,
+    )
 
 
 @router.get("/{rd_token}/stream/{type}/{id}.json")

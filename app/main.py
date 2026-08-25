@@ -11,7 +11,12 @@ from fastapi.responses import RedirectResponse
 from app.manifest import get_manifest
 from app.models.config import settings
 from app.routes.configure import router as configure_router
-from app.routes.stream import aggregator, proteger_resposta_com_token
+from app.routes.stream import (
+    SourceIdsPath,
+    aggregator,
+    parse_selected_sources,
+    proteger_resposta_com_token,
+)
 from app.routes.stream import router as stream_router
 from app.services.cache import cache
 
@@ -115,6 +120,31 @@ async def health():
         "scraper_timeout_seconds": settings.SCRAPER_TIMEOUT_SECONDS,
         "sources": aggregator.get_source_health(),
     }
+
+
+@app.get("/sources/{source_ids}/manifest.json")
+async def manifest_with_sources(source_ids: SourceIdsPath):
+    """Manifest cuja URL transporta a seleção de fontes do usuário."""
+    parse_selected_sources(source_ids)
+    return get_manifest()
+
+
+@app.get("/sources/{source_ids}/hybrid/{rd_token}/manifest.json")
+async def manifest_hybrid_with_sources(
+    source_ids: SourceIdsPath, rd_token: str, response: Response
+):
+    parse_selected_sources(source_ids)
+    proteger_resposta_com_token(response)
+    return get_manifest()
+
+
+@app.get("/sources/{source_ids}/{rd_token}/manifest.json")
+async def manifest_rd_with_sources(
+    source_ids: SourceIdsPath, rd_token: str, response: Response
+):
+    parse_selected_sources(source_ids)
+    proteger_resposta_com_token(response)
+    return get_manifest()
 
 
 @app.get("/manifest.json")
