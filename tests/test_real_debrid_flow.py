@@ -282,3 +282,110 @@ class TestFluxoCompleto:
 
         assert url == "https://real-debrid.com/final"
         await service.close()
+
+
+class TestCheckpointSelectFiles:
+    """
+    O estado retomável só pode pular uma etapa que terminou com sucesso.
+
+    Antes, `selected_file_id` era preenchido antes do POST selectFiles. Um
+    timeout/5xx era persistido no finally da rota como se a seleção estivesse
+    concluída. Todos os retries pulavam selectFiles e ficavam em 503/504 até
+    a sessão expirar.
+    """
+
+    @pytest.mark.asyncio
+    async def test_falha_selectfiles_nao_marca_o_checkpoint(self):
+        from app.services.real_debrid import EstadoPlayback
+
+        service = RealDebridService(api_token="token-teste")
+        estado = EstadoPlayback()
+        arquivos = [_arquivo(7, "/Filme/filme.mkv", 2_000_000_000)]
+
+        request = httpx.Request(
+            "POST",
+            "https://api.real-debrid.com/rest/1.0/torrents/selectFiles/torrent123",
+        )
+        response = httpx.Response(status_code=503, request=request)
+        select_com_erro = _resp({})
+        select_com_erro.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "indisponivel", request=request, response=response
+        )
+
+        service.client.get = AsyncMock(return_value=_resp({"files": arquivos}))
+        service.client.post = AsyncMock(
+            side_effect=[_resp({"id": "torrent123"}), select_com_erro]
+        )
+
+        with pytest.raises(RealDebridResolveError):
+            await service.get_stream_url(
+                magnet="magnet:?xt=urn:btih:" + "a" * 40,
+                type="movie",
+                estado=estado,
+            )
+
+        assert estado.rd_torrent_id == "torrent123", "addMagnet confirmado e reutilizavel"
+        assert estado.selected_file_id is None, (
+            "selectFiles falhou — o retry precisa repetir esta etapa"
+        )
+        await service.close()
+
+    @pytest.mark.asyncio
+    async def test_retry_reutiliza_torrent_mas_repete_selectfiles(self):
+        from app.services.real_debrid import EstadoPlayback
+
+        estado = EstadoPlayback(rd_torrent_id="torrent123", selected_file_id=None)
+        service = RealDebridService(api_token="token-teste")
+        arquivos = [_arquivo(7, "/Filme/filme.mkv", 2_000_000_000)]
+
+        service.client.get = AsyncMock(
+            side_effect=[
+                _resp({"files": arquivos}),
+                _resp({"links": ["https://rd/link"]}),
+            ]
+        )
+        service.client.post = AsyncMock(
+            side_effect=[
+                _resp({}),
+                _resp({"download": "https://real-debrid.com/final"}),
+            ]
+        )
+
+        url = await service.get_stream_url(
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            type="movie",
+            estado=estado,
+        )
+
+        assert url == "https://real-debrid.com/final"
+        assert estado.rd_torrent_id == "torrent123"
+        assert estado.selected_file_id == "7"
+
+        post_urls = [call.args[0] for call in service.client.post.await_args_list]
+        assert not any("addMagnet" in url for url in post_urls)
+        assert sum("selectFiles" in url for url in post_urls) == 1
+        assert sum("unrestrict" in url for url in post_urls) == 1
+        await service.close()
+
+    @pytest.mark.asyncio
+    async def test_selectfiles_confirmado_continua_pulando_no_retry(self):
+        from app.services.real_debrid import EstadoPlayback
+
+        estado = EstadoPlayback(rd_torrent_id="torrent123", selected_file_id="7")
+        service = RealDebridService(api_token="token-teste")
+        service.client.get = AsyncMock(return_value=_resp({"links": ["https://rd/link"]}))
+        service.client.post = AsyncMock(
+            return_value=_resp({"download": "https://real-debrid.com/final"})
+        )
+
+        await service.get_stream_url(
+            magnet="magnet:?xt=urn:btih:" + "a" * 40,
+            type="movie",
+            estado=estado,
+        )
+
+        post_urls = [call.args[0] for call in service.client.post.await_args_list]
+        assert not any("addMagnet" in url for url in post_urls)
+        assert not any("selectFiles" in url for url in post_urls)
+        assert sum("unrestrict" in url for url in post_urls) == 1
+        await service.close()

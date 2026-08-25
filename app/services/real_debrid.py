@@ -338,7 +338,6 @@ class RealDebridService:
                     type,
                     stremio_id,
                 )
-                estado.selected_file_id = selected_file_id
 
                 stage = "selectFiles"
                 self._log("selectFiles", "selecionando arquivo principal")
@@ -347,6 +346,13 @@ class RealDebridService:
                     data={"files": selected_file_id},
                 )
                 resp_select.raise_for_status()
+
+                # O checkpoint só pode afirmar que a seleção terminou DEPOIS
+                # da confirmação do RD. Antes, timeout/5xx deixava este campo
+                # preenchido; o finally da rota persistia o estado e todo retry
+                # pulava selectFiles, consultando links que talvez nunca fossem
+                # criados. A sessão ficava presa em 503/504 até expirar.
+                estado.selected_file_id = selected_file_id
                 self._log("selectFiles", "arquivo selecionado")
 
             stage = "torrents/info.links"
