@@ -32,6 +32,15 @@ class ArchiveOrgScraper(BaseScraper):
     base_url = "https://archive.org"
     stability = "estável"
 
+    def _host_permitido(self, host: str) -> bool:
+        """
+        Aceita apenas archive.org e subdomínios reais de archive.org.
+
+        O ponto antes do sufixo é essencial: `archive.org.evil.com` e
+        `evilarchive.org` não passam. A exceção fica limitada a esta fonte.
+        """
+        return host == "archive.org" or host.endswith(".archive.org")
+
     # Quantos itens candidatos avaliar por busca (cada um custa um download
     # extra do .torrent). Processados em paralelo (limitado por semáforo),
     # então aumentar isso não multiplica o tempo de resposta.
