@@ -171,7 +171,18 @@ class SQLiteCacheBackend(CacheBackend):
         value_json, created_at, ttl = row
 
         if created_at + ttl < time.time():
-            await self._db.execute("DELETE FROM stream_cache WHERE key = ?", (key,))
+            # A leitura e a exclusao sao statements separados. Um set()
+            # concorrente pode substituir a chave entre os dois awaits; um
+            # DELETE apenas por key apagaria o valor NOVO (lost update).
+            # Exclui somente a versao exata que acabamos de classificar como
+            # expirada. Se a linha mudou, rowcount=0 e o valor novo sobrevive.
+            await self._db.execute(
+                """
+                DELETE FROM stream_cache
+                WHERE key = ? AND value = ? AND created_at = ? AND ttl = ?
+                """,
+                (key, value_json, created_at, ttl),
+            )
             await self._db.commit()
             logger.debug(f"[CACHE] EXPIRED {key} ({elapsed:.0f}ms)")
             return None
@@ -209,7 +220,14 @@ class SQLiteCacheBackend(CacheBackend):
         value_json, created_at, ttl = row
 
         if created_at + ttl < time.time():
-            await self._db.execute("DELETE FROM stream_cache WHERE key = ?", (key,))
+            # Mesmo guard de versao de get(): nao apagar um set concorrente.
+            await self._db.execute(
+                """
+                DELETE FROM stream_cache
+                WHERE key = ? AND value = ? AND created_at = ? AND ttl = ?
+                """,
+                (key, value_json, created_at, ttl),
+            )
             await self._db.commit()
             logger.debug(f"[CACHE] EXPIRED (with_status) {key}")
             return None, "expired"
