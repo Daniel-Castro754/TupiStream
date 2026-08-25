@@ -114,6 +114,28 @@ SOURCE_ID_BY_CLASS = {
     scraper_cls: SOURCE_ID_BY_FLAG[flag_name]
     for flag_name, scraper_cls in SCRAPER_REGISTRY
 }
+SOURCE_FLAG_BY_ID = {source_id: flag for flag, source_id in SOURCE_ID_BY_FLAG.items()}
+ALL_SOURCE_IDS = frozenset(SOURCE_FLAG_BY_ID)
+
+
+def parse_source_ids(raw: str) -> frozenset[str]:
+    """Valida e normaliza a seleção transportada no caminho do manifest."""
+    values = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    if not values:
+        raise ValueError("selecione pelo menos uma fonte")
+    unknown = sorted(set(values) - ALL_SOURCE_IDS)
+    if unknown:
+        raise ValueError(f"fontes desconhecidas: {', '.join(unknown)}")
+    return frozenset(values)
+
+
+def ordered_source_ids(selected: frozenset[str]) -> list[str]:
+    """Ordem canônica do registry para URL, cache e testes reproduzíveis."""
+    return [
+        SOURCE_ID_BY_FLAG[flag]
+        for flag, _ in SCRAPER_REGISTRY
+        if SOURCE_ID_BY_FLAG[flag] in selected
+    ]
 
 # ── Circuit breaker por fonte ──
 # Depois de N falhas seguidas (erro/indisponível — não conta "vazio", que é
@@ -544,6 +566,7 @@ class StreamAggregator:
         t_start: float,
         season: int | None,
         episode: int | None,
+        selected_sources: frozenset[str] | None,
     ) -> list[TorrentResult]:
         await self._acquire_search_slot(req_id)
         try:
@@ -576,6 +599,7 @@ class StreamAggregator:
                     remaining,
                     season=season,
                     episode=episode,
+                    selected_sources=selected_sources,
                 )
             else:
                 logger.warning(
@@ -603,6 +627,7 @@ class StreamAggregator:
                     season=season,
                     episode=episode,
                     skip_query_independent=True,
+                    selected_sources=selected_sources,
                 )
                 resultado = resultado.combinar(
                     extras,
@@ -634,6 +659,7 @@ class StreamAggregator:
         request_base_url: str | None = None,
         season: int | None = None,
         episode: int | None = None,
+        selected_sources: frozenset[str] | None = None,
     ) -> list[StreamResult]:
         """
         Busca streams em todos os scrapers e formata para o Stremio.
@@ -667,6 +693,9 @@ class StreamAggregator:
         cache_key = f"streams:{STREAM_CACHE_VERSION}:{imdb_id}:{type}"
         if season is not None and episode is not None:
             cache_key = f"{cache_key}:{season}:{episode}"
+        if selected_sources is not None:
+            source_key = ",".join(ordered_source_ids(selected_sources)) or "none"
+            cache_key = f"{cache_key}:sources={source_key}"
         torrent_results = await self._get_cached_torrents(cache_key, req_id)
 
         if torrent_results is None:
@@ -680,6 +709,7 @@ class StreamAggregator:
                     t_start=t_start,
                     season=season,
                     episode=episode,
+                    selected_sources=selected_sources,
                 ),
             )
 
@@ -791,6 +821,7 @@ class StreamAggregator:
         req_id: str, label: str, budget: float,
         season: int | None = None, episode: int | None = None,
         skip_query_independent: bool = False,
+        selected_sources: frozenset[str] | None = None,
     ) -> ScrapeOutcome:
         """
         Executa scrapers em paralelo e registra a saúde da última consulta.
@@ -815,6 +846,15 @@ class StreamAggregator:
         scrapers_a_rodar: list[BaseScraper] = []
         pulados = 0
         for scraper in self.scrapers:
+            if selected_sources is not None:
+                source_id = SOURCE_ID_BY_CLASS.get(scraper.__class__)
+                if source_id not in selected_sources:
+                    pulados += 1
+                    logger.debug(
+                        f"[{req_id}] [{label}] [{scraper.name}] pulado — "
+                        "não selecionado pelo usuário"
+                    )
+                    continue
             if skip_query_independent and not scraper.USES_TEXT_QUERY:
                 pulados += 1
                 logger.debug(
@@ -835,7 +875,9 @@ class StreamAggregator:
             scrapers_a_rodar.append(scraper)
 
         if not scrapers_a_rodar:
-            logger.warning(f"[{req_id}] Todas as fontes estão em cooldown (circuit breaker)")
+            logger.warning(
+                f"[{req_id}] Nenhuma fonte selecionada e disponível para esta rodada"
+            )
             return ScrapeOutcome(ran=False, skipped_sources=pulados)
 
         effective_timeout = min(settings.SCRAPER_TIMEOUT_SECONDS + 2.0, budget)

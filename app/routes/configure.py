@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 from app.models.config import settings
-from app.services.stream_aggregator import SCRAPER_REGISTRY
+from app.services.stream_aggregator import SCRAPER_REGISTRY, SOURCE_ID_BY_FLAG
 
 router = APIRouter()
 
@@ -55,6 +55,19 @@ STABILITY_LABELS: dict[str, str] = {
     "não_confiável_cloud": "Nao confiavel em cloud",
 }
 
+SOURCE_TYPE_BY_FLAG = {
+    "ENABLE_BRAZUCA": "Addon Stremio / JSON",
+    "ENABLE_YTS": "API JSON",
+    "ENABLE_ARCHIVE_ORG": "API pública / .torrent",
+    "ENABLE_APACHE_TORRENT": "WordPress / HTML",
+    "ENABLE_COMANDO_FILMES": "WordPress / HTML",
+    "ENABLE_HDR_TORRENT": "WordPress / HTML",
+    "ENABLE_MICOLEAO": "WordPress / HTML",
+    "ENABLE_TORRENT_GALAXY": "HTML",
+    "ENABLE_1337X": "HTML",
+    "ENABLE_RUTRACKER": "HTML / fórum",
+}
+
 
 def _get_scraper_entries() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Separa scrapers ativos e desativados com base no registry real."""
@@ -66,10 +79,12 @@ def _get_scraper_entries() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         stability = getattr(scraper_cls, "stability", "estável")
         entry = {
             "flag": flag_name,
+            "id": SOURCE_ID_BY_FLAG[flag_name],
             "name": getattr(scraper_cls, "name", scraper_cls.__name__),
             "emoji": meta.get("emoji", "&#x1F4E6;"),
             "description": meta.get("description", "Sem nota operacional cadastrada."),
             "stability": STABILITY_LABELS.get(stability, stability.replace("_", " ").title()),
+            "type": SOURCE_TYPE_BY_FLAG.get(flag_name, "Fonte externa"),
             "enabled": "true" if getattr(settings, flag_name, False) else "false",
         }
         if entry["enabled"] == "true":
@@ -80,48 +95,49 @@ def _get_scraper_entries() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     return enabled_entries, disabled_entries
 
 
-def _render_source_section(title: str, badge_label: str, badge_class: str, entries: list[dict[str, str]]) -> str:
-    """Renderiza uma secao simples de scrapers para a pagina /configure."""
-    if not entries:
-        return ""
-
+def _render_source_picker(entries: list[dict[str, str]]) -> str:
+    """Renderiza seleção do usuário sem confundir seleção com saúde."""
     items = []
     for entry in entries:
+        available = entry["enabled"] == "true"
+        disabled = "" if available else " disabled"
+        checked = " checked" if available else ""
+        card_class = "" if available else " is-unavailable"
+        badge_class = "badge-on" if available else "badge-off"
+        badge = "Disponivel" if available else "Indisponivel nesta instancia"
+        initial_status = "Ainda nao verificada" if available else "Desabilitada pelo administrador"
         items.append(
             f"""
-    <div class="source-item">
-      <span class="source-emoji">{entry["emoji"]}</span>
-      <div class="source-info">
-        <div class="source-head">
-          <div class="source-name">{entry["name"]}</div>
-          <span class="source-badge {badge_class}">{badge_label}</span>
-        </div>
-        <div class="source-desc">{entry["description"]}</div>
-        <div class="source-meta">{entry["stability"]} • {entry["flag"]}</div>
-      </div>
-    </div>"""
+    <label class="source-item{card_class}" data-source-card="{entry['id']}">
+      <input class="source-toggle" type="checkbox" data-source-id="{entry['id']}"{checked}{disabled}>
+      <span class="source-emoji">{entry['emoji']}</span>
+      <span class="source-info">
+        <span class="source-head">
+          <span class="source-name">{entry['name']}</span>
+          <span class="source-badge {badge_class}">{badge}</span>
+        </span>
+        <span class="source-desc">{entry['description']}</span>
+        <span class="source-meta">{entry['type']} • {entry['stability']} • {entry['flag']}</span>
+        <span class="source-state" data-health-id="{entry['id']}">{initial_status}</span>
+      </span>
+    </label>"""
         )
 
     return f"""
   <div class="card">
-    <p class="sources-title">{title}</p>
+    <p class="sources-title">Fontes que desejo utilizar</p>
+    <p class="sources-help">
+      A fonte so executa quando esta disponivel no servidor e marcada aqui.
+      Sua selecao fica na URL instalada; nao e salva como estado global.
+    </p>
     {''.join(items)}
   </div>"""
 
 
 def _build_config_html() -> str:
-    """Monta a pagina de configuracao com base no registry real de scrapers."""
+    """Monta a página de configuração com fontes disponíveis e bloqueadas."""
     enabled_entries, disabled_entries = _get_scraper_entries()
-    sections_html = (
-        _render_source_section("Fontes ativas nesta instancia", "Ativa", "badge-on", enabled_entries)
-        + _render_source_section(
-            "Fontes suportadas, mas desligadas nesta instancia",
-            "Desligada",
-            "badge-off",
-            disabled_entries,
-        )
-    )
-
+    sections_html = _render_source_picker(enabled_entries + disabled_entries)
     return CONFIG_HTML_TEMPLATE.replace("__SCRAPER_SECTIONS__", sections_html)
 
 
@@ -191,7 +207,8 @@ CONFIG_HTML_TEMPLATE = """\
     color: #ccc;
   }
 
-  .form-group input[type="text"] {
+  .form-group input[type="text"],
+  .form-group input[type="password"] {
     width: 100%;
     padding: 0.75rem 1rem;
     background: #111;
@@ -203,7 +220,8 @@ CONFIG_HTML_TEMPLATE = """\
     transition: border-color 0.2s;
   }
 
-  .form-group input[type="text"]:focus {
+  .form-group input[type="text"]:focus,
+  .form-group input[type="password"]:focus {
     border-color: #00b4d8;
   }
 
@@ -365,8 +383,15 @@ CONFIG_HTML_TEMPLATE = """\
   .sources-title {
     font-weight: 700;
     font-size: 1rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.35rem;
     color: #fff;
+  }
+
+  .sources-help {
+    color: #929292;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    margin-bottom: 0.75rem;
   }
 
   .source-item {
@@ -375,6 +400,17 @@ CONFIG_HTML_TEMPLATE = """\
     gap: 0.75rem;
     padding: 0.8rem 0;
     border-bottom: 1px solid #222;
+    cursor: pointer;
+  }
+
+  .source-item.is-unavailable { opacity: 0.55; cursor: not-allowed; }
+
+  .source-toggle {
+    width: 1.1rem;
+    height: 1.1rem;
+    margin-top: 0.2rem;
+    accent-color: #00b4d8;
+    flex-shrink: 0;
   }
 
   .source-item:last-child { border-bottom: none; }
@@ -386,7 +422,7 @@ CONFIG_HTML_TEMPLATE = """\
     flex-shrink: 0;
   }
 
-  .source-info { flex: 1; }
+  .source-info { flex: 1; display: block; min-width: 0; }
 
   .source-head {
     display: flex;
@@ -413,6 +449,15 @@ CONFIG_HTML_TEMPLATE = """\
     color: #7e7e7e;
     margin-top: 0.25rem;
   }
+
+  .source-state {
+    display: block;
+    font-size: 0.76rem;
+    color: #63d8ef;
+    margin-top: 0.3rem;
+  }
+
+  .source-item.is-unavailable .source-state { color: #ffcf7e; }
 
   .source-badge {
     display: inline-flex;
@@ -540,6 +585,7 @@ __SCRAPER_SECTIONS__
 (function() {
   var tokenInput = document.getElementById('rd-token');
   var includeP2PInput = document.getElementById('include-p2p');
+  var sourceInputs = Array.prototype.slice.call(document.querySelectorAll('.source-toggle'));
   var modeSummary = document.getElementById('mode-summary');
   var resultArea = document.getElementById('result-area');
   var manifestInput = document.getElementById('manifest-url');
@@ -549,13 +595,22 @@ __SCRAPER_SECTIONS__
   document.getElementById('btn-generate').addEventListener('click', function() {
     var token = tokenInput.value.trim();
     var baseUrl = window.location.origin;
+    var selectedSources = sourceInputs.filter(function(input) {
+      return input.checked && !input.disabled;
+    }).map(function(input) { return input.dataset.sourceId; });
 
+    if (!selectedSources.length) {
+      showToast('Selecione pelo menos uma fonte');
+      return;
+    }
+
+    var sourcePrefix = '/sources/' + selectedSources.join(',');
     if (token && includeP2PInput.checked) {
-      manifestUrl = baseUrl + '/hybrid/' + encodeURIComponent(token) + '/manifest.json';
+      manifestUrl = baseUrl + sourcePrefix + '/hybrid/' + encodeURIComponent(token) + '/manifest.json';
     } else if (token) {
-      manifestUrl = baseUrl + '/' + encodeURIComponent(token) + '/manifest.json';
+      manifestUrl = baseUrl + sourcePrefix + '/' + encodeURIComponent(token) + '/manifest.json';
     } else {
-      manifestUrl = baseUrl + '/manifest.json';
+      manifestUrl = baseUrl + sourcePrefix + '/manifest.json';
     }
 
     manifestInput.value = manifestUrl;
@@ -577,6 +632,32 @@ __SCRAPER_SECTIONS__
   tokenInput.addEventListener('input', updateModeSummary);
   includeP2PInput.addEventListener('change', updateModeSummary);
   updateModeSummary();
+
+  var healthLabels = {
+    ok: 'Saudavel',
+    empty: 'Saudavel, sem resultado na ultima busca',
+    unavailable: 'Indisponivel',
+    error: 'Erro na ultima consulta',
+    cooldown: 'Em cooldown',
+    disabled: 'Desabilitada pelo administrador',
+    not_checked: 'Ainda nao verificada'
+  };
+  fetch('/health').then(function(response) {
+    return response.json();
+  }).then(function(data) {
+    (data.sources || []).forEach(function(source) {
+      var node = document.querySelector('[data-health-id="' + source.id + '"]');
+      if (!node) return;
+      var label = healthLabels[source.status] || source.status;
+      if (source.active_origin) label += ' • ' + source.active_origin;
+      if (source.configured_mirrors) {
+        label += ' • ' + source.configured_mirrors + ' origem(ns) configurada(s)';
+      }
+      node.textContent = label;
+    });
+  }).catch(function() {
+    // A configuração continua utilizável mesmo se a telemetria estiver fora.
+  });
 
   document.getElementById('btn-copy').addEventListener('click', function() {
     navigator.clipboard.writeText(manifestUrl).then(function() {
