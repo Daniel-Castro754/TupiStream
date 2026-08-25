@@ -17,12 +17,12 @@ from app.services.stream_aggregator import (
 
 
 class TestSourceIdParsing:
-    def test_valida_normaliza_e_remove_duplicata(self):
-        selected = parse_source_ids("yts,archive,YTS")
+    def test_valida_remove_duplicata_e_preserva_ids_lowercase(self):
+        selected = parse_source_ids("yts,archive,yts")
         assert selected == frozenset({"yts", "archive"})
         assert ordered_source_ids(selected) == ["yts", "archive"]
 
-    @pytest.mark.parametrize("raw", ["", ",", "desconhecida", "yts,evil"])
+    @pytest.mark.parametrize("raw", ["", ",", "desconhecida", "yts,evil", "YTS"])
     def test_rejeita_selecao_invalida(self, raw):
         with pytest.raises(ValueError):
             parse_source_ids(raw)
@@ -82,44 +82,78 @@ class TestAggregatorSelection:
         yts.search.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_selecao_faz_parte_da_chave_de_cache_e_singleflight(self):
+    async def test_chave_usa_conjunto_efetivo_e_canonico(self):
+        yts = YTSScraper()
+        brazuca = BrazucaAddonScraper()
         with patch(
-            "app.services.stream_aggregator._build_scraper_list", return_value=[]
+            "app.services.stream_aggregator._build_scraper_list",
+            return_value=[yts, brazuca],
         ):
             aggregator = StreamAggregator()
-        aggregator._get_cached_torrents = AsyncMock(return_value=None)
-        aggregator._singleflight = AsyncMock(return_value=[])
+        try:
+            effective_yts = aggregator._effective_source_ids(frozenset({"yts", "hdr"}))
+            effective_all = aggregator._effective_source_ids(None)
+            assert effective_yts == frozenset({"yts"})
+            assert effective_all == frozenset({"brazuca", "yts"})
 
-        await aggregator.get_streams(
-            "tt0017925",
-            "movie",
-            "a",
-            selected_sources=frozenset({"yts"}),
-        )
-        key_yts = aggregator._singleflight.await_args.args[0]
-        aggregator._singleflight.reset_mock()
-        await aggregator.get_streams(
-            "tt0017925",
-            "movie",
-            "b",
-            selected_sources=frozenset({"archive"}),
-        )
-        key_archive = aggregator._singleflight.await_args.args[0]
+            key_yts = aggregator._stream_cache_key(
+                "tt0017925", "movie", None, None, effective_yts
+            )
+            key_equivalent = aggregator._stream_cache_key(
+                "tt0017925", "movie", None, None,
+                aggregator._effective_source_ids(frozenset({"yts"})),
+            )
+            assert key_yts == key_equivalent
+            assert key_yts.endswith("sources=yts")
+            assert key_yts.startswith("streams:v3:")
 
-        assert key_yts != key_archive
-        assert key_yts.endswith("sources=yts")
-        assert key_archive.endswith("sources=archive")
+            legacy_key = aggregator._stream_cache_key(
+                "tt0017925", "movie", None, None, effective_all
+            )
+            selected_all_key = aggregator._stream_cache_key(
+                "tt0017925", "movie", None, None,
+                aggregator._effective_source_ids(frozenset({"yts", "brazuca"})),
+            )
+            assert legacy_key == selected_all_key
+        finally:
+            await aggregator.close()
 
     @pytest.mark.asyncio
-    async def test_url_antiga_preserva_padrao_todas_as_fontes(self):
+    async def test_chave_de_serie_preserva_temporada_episodio_e_fontes(self):
+        yts = YTSScraper()
         with patch(
-            "app.services.stream_aggregator._build_scraper_list", return_value=[]
+            "app.services.stream_aggregator._build_scraper_list", return_value=[yts]
         ):
             aggregator = StreamAggregator()
-        aggregator._get_cached_torrents = AsyncMock(return_value=[])
-        await aggregator.get_streams("tt0017925", "movie", "legacy")
-        key = aggregator._get_cached_torrents.await_args.args[0]
-        assert "sources=" not in key
+        try:
+            key = aggregator._stream_cache_key(
+                "tt1234567", "series", 2, 5, frozenset({"yts"})
+            )
+            assert key == "streams:v3:tt1234567:series:2:5:sources=yts"
+        finally:
+            await aggregator.close()
+
+    @pytest.mark.asyncio
+    async def test_selecao_apenas_desabilitada_retorna_vazio_sem_trabalho(self):
+        yts = YTSScraper()
+        with patch(
+            "app.services.stream_aggregator._build_scraper_list", return_value=[yts]
+        ):
+            aggregator = StreamAggregator()
+        aggregator._get_cached_torrents = AsyncMock()
+        aggregator._fetch_title = AsyncMock()
+        aggregator._singleflight = AsyncMock()
+        try:
+            streams = await aggregator.get_streams(
+                "tt0017925", "movie", "disabled-only",
+                selected_sources=frozenset({"archive"}),
+            )
+        finally:
+            await aggregator.close()
+        assert streams == []
+        aggregator._get_cached_torrents.assert_not_awaited()
+        aggregator._fetch_title.assert_not_awaited()
+        aggregator._singleflight.assert_not_awaited()
 
 
 async def _get(path: str):
@@ -191,6 +225,61 @@ class TestSelectedRoutes:
         assert mocked.await_args.kwargs["include_p2p"] is False
         assert mocked.await_args.kwargs["rd_token"] == "token"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/sources/evil/token/manifest.json",
+            "/sources/evil/hybrid/token/manifest.json",
+            "/sources/evil/token/stream/movie/tt0017925.json",
+            "/sources/evil/hybrid/token/stream/movie/tt0017925.json",
+        ],
+    )
+    async def test_erro_em_url_selecionada_com_token_recebe_headers(self, path):
+        response = await _get(path)
+        assert response.status_code == 422
+        assert response.headers["cache-control"] == "no-store, private"
+        assert response.headers["referrer-policy"] == "no-referrer"
+        assert response.headers["x-robots-tag"] == "noindex, nofollow"
+
+    @pytest.mark.asyncio
+    async def test_token_selecionado_grande_demais_e_rejeitado_com_headers(self):
+        token = "x" * 257
+        response = await _get(f"/sources/yts/{token}/manifest.json")
+        assert response.status_code == 422
+        assert response.headers["cache-control"] == "no-store, private"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_ids", ["YTS", "yts%20", "yts.", "yts%3C"])
+    async def test_boundary_rejeita_ids_fora_do_alfabeto_publico(self, source_ids):
+        response = await _get(f"/sources/{source_ids}/manifest.json")
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_token_legacy_literal_sources_continua_funcionando(self):
+        manifest = await _get("/sources/manifest.json")
+        assert manifest.status_code == 200
+        assert manifest.headers["cache-control"] == "no-store, private"
+
+        with patch(
+            "app.routes.stream.aggregator.get_streams", AsyncMock(return_value=[])
+        ) as mocked:
+            stream = await _get("/sources/stream/movie/tt0017925.json")
+        assert stream.status_code == 200
+        assert mocked.await_args.kwargs["rd_token"] == "sources"
+
+
+class TestRegistrySourceIds:
+    def test_mapping_e_total_unico_lowercase_e_path_safe(self):
+        from app.services.stream_aggregator import SCRAPER_REGISTRY, SOURCE_ID_BY_FLAG
+
+        registry_flags = {flag for flag, _ in SCRAPER_REGISTRY}
+        assert set(SOURCE_ID_BY_FLAG) == registry_flags
+        ids = list(SOURCE_ID_BY_FLAG.values())
+        assert len(ids) == len(set(ids))
+        assert all(source_id == source_id.lower() for source_id in ids)
+        assert all(source_id.replace("-", "").isalnum() for source_id in ids)
+
 
 class TestConfigureSourcePicker:
     def test_renderiza_toggle_para_todas_as_fontes(self):
@@ -257,3 +346,11 @@ class TestConfigureSourcePicker:
         assert "Desabilitada pelo administrador" in html
         assert "healthLabels" in html
         assert "cooldown" in html
+
+    def test_alterar_entrada_invalida_manifest_gerado(self):
+        html = _build_config_html()
+        assert "function invalidateManifest()" in html
+        assert "manifestUrl = '';" in html
+        assert "resultArea.classList.remove('visible')" in html
+        assert "sourceInputs.forEach(function(input)" in html
+        assert "input.addEventListener('change', invalidateManifest)" in html

@@ -32,7 +32,27 @@ recentes.
 
 1. Acesse a página de configuração do addon
 2. Insira seu token Real-Debrid (opcional, mas recomendado)
-3. Clique em "Instalar no Stremio"
+3. Escolha as fontes disponíveis que deseja consultar
+4. Clique em "Instalar no Stremio"
+
+### Seleção de fontes por usuário
+
+As flags `ENABLE_*` continuam sendo o controle administrativo da instância.
+O usuário escolhe um subconjunto na página `/configure`; uma fonte só executa
+quando está **habilitada no servidor e selecionada pelo usuário**.
+
+A seleção viaja na própria URL instalada, sem sessão global ou banco de
+preferências:
+
+```text
+/sources/yts,archive/manifest.json
+/sources/yts,archive/SEU-TOKEN/manifest.json
+/sources/yts,archive/hybrid/SEU-TOKEN/manifest.json
+```
+
+URLs antigas sem `/sources/...` continuam válidas e usam todas as fontes
+habilitadas pelo administrador. Os IDs (`apache`, `comando`, `yts`, `archive`,
+etc.) são parte permanente da API: não devem ser reutilizados.
 
 ## Modos de reproducao
 

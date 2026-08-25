@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
@@ -13,7 +13,9 @@ from app.models.config import settings
 from app.routes.configure import router as configure_router
 from app.routes.stream import (
     SourceIdsPath,
+    TokenPath,
     aggregator,
+    caminho_contem_token,
     parse_selected_sources,
     proteger_resposta_com_token,
 )
@@ -89,6 +91,22 @@ async def lifespan(app: FastAPI):
 # Cria a aplicação FastAPI
 app = FastAPI(title="BR Streams 🇧🇷", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def proteger_erros_em_urls_com_token(request: Request, call_next):
+    """
+    Aplica os headers também a 404/422 gerados antes do handler.
+
+    Mutar o objeto ``Response`` injetado e depois levantar HTTPException não
+    preserva os headers: o FastAPI cria outra resposta para a exceção. O
+    middleware vê a resposta final, inclusive falhas de validação de Path.
+    """
+    response = await call_next(request)
+    if caminho_contem_token(request.url.path):
+        proteger_resposta_com_token(response)
+    return response
+
+
 # CORS liberado para todas as origens (necessário para Stremio web)
 app.add_middleware(
     CORSMiddleware,
@@ -131,19 +149,19 @@ async def manifest_with_sources(source_ids: SourceIdsPath):
 
 @app.get("/sources/{source_ids}/hybrid/{rd_token}/manifest.json")
 async def manifest_hybrid_with_sources(
-    source_ids: SourceIdsPath, rd_token: str, response: Response
+    source_ids: SourceIdsPath, rd_token: TokenPath, response: Response
 ):
-    parse_selected_sources(source_ids)
     proteger_resposta_com_token(response)
+    parse_selected_sources(source_ids)
     return get_manifest()
 
 
 @app.get("/sources/{source_ids}/{rd_token}/manifest.json")
 async def manifest_rd_with_sources(
-    source_ids: SourceIdsPath, rd_token: str, response: Response
+    source_ids: SourceIdsPath, rd_token: TokenPath, response: Response
 ):
-    parse_selected_sources(source_ids)
     proteger_resposta_com_token(response)
+    parse_selected_sources(source_ids)
     return get_manifest()
 
 

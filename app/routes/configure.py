@@ -618,6 +618,12 @@ __SCRAPER_SECTIONS__
     resultArea.classList.add('visible');
   });
 
+  function invalidateManifest() {
+    manifestUrl = '';
+    manifestInput.value = '';
+    resultArea.classList.remove('visible');
+  }
+
   function updateModeSummary() {
     var token = tokenInput.value.trim();
 
@@ -630,8 +636,17 @@ __SCRAPER_SECTIONS__
     }
   }
 
-  tokenInput.addEventListener('input', updateModeSummary);
-  includeP2PInput.addEventListener('change', updateModeSummary);
+  tokenInput.addEventListener('input', function() {
+    updateModeSummary();
+    invalidateManifest();
+  });
+  includeP2PInput.addEventListener('change', function() {
+    updateModeSummary();
+    invalidateManifest();
+  });
+  sourceInputs.forEach(function(input) {
+    input.addEventListener('change', invalidateManifest);
+  });
   updateModeSummary();
 
   var healthLabels = {

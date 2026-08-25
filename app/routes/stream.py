@@ -47,6 +47,38 @@ PLAY_TIMEOUT_RETRY_AFTER_SECONDS = 5
 # resolved_url e guardada na mesma play session.
 # Por isso o TTL precisa ficar alinhado ao TTL da sessao para nao encurta-la.
 PLAY_RESOLVED_URL_TTL_SECONDS = PLAY_SESSION_TTL_SECONDS
+TOKEN_RESPONSE_HEADERS = {
+    "Cache-Control": "no-store, private",
+    "Referrer-Policy": "no-referrer",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
+def caminho_contem_token(path: str) -> bool:
+    """Classifica somente as formas de rota que transportam token no path."""
+    parts = [part for part in path.strip("/").split("/") if part]
+    if not parts:
+        return False
+    if parts[0] == "sources":
+        if len(parts) == 4 and parts[-1] == "manifest.json":
+            return True
+        if len(parts) == 5 and parts[2] == "hybrid" and parts[-1] == "manifest.json":
+            return True
+        if len(parts) == 6 and parts[3] == "stream":
+            return True
+        if len(parts) == 7 and parts[2] == "hybrid" and parts[4] == "stream":
+            return True
+    if parts[0] == "hybrid":
+        if len(parts) == 3 and parts[-1] == "manifest.json":
+            return True
+        if len(parts) == 5 and parts[2] == "stream":
+            return True
+    # Legacy token may literally be "sources" or "hybrid"; segment shape
+    # distinguishes it from the longer selected/hybrid routes.
+    return (
+        len(parts) == 2 and parts[-1] == "manifest.json"
+    ) or (len(parts) == 4 and parts[1] == "stream")
+
 
 def proteger_resposta_com_token(response: Response) -> None:
     """
@@ -65,9 +97,7 @@ def proteger_resposta_com_token(response: Response) -> None:
       da rota, o que quebra toda URL ja instalada e por isso e decisao de
       produto, nao de implementacao.
     """
-    response.headers["Cache-Control"] = "no-store, private"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    response.headers.update(TOKEN_RESPONSE_HEADERS)
 
 
 # Instancia global do agregador.
@@ -238,9 +268,9 @@ async def _get_selected_streams(
     response: Response | None,
     include_p2p: bool,
 ) -> dict:
-    selected = parse_selected_sources(source_ids)
     if response is not None and rd_token:
         proteger_resposta_com_token(response)
+    selected = parse_selected_sources(source_ids)
     _validate_stream_id(content_type, stremio_id)
     req_id = uuid.uuid4().hex[:8]
     set_req_id(req_id)

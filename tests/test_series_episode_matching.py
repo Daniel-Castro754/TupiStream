@@ -143,5 +143,6 @@ class TestCacheKeyIsoladoPorEpisodio:
         # não quantidade de leituras do cache.
         chaves_unicas = list(dict.fromkeys(chaves_consultadas))
         assert len(chaves_unicas) == 2
-        assert chaves_unicas[0].endswith(":1:5")
-        assert chaves_unicas[1].endswith(":1:6")
+        assert chaves_unicas[0].startswith("streams:v3:")
+        assert ":1:5:sources=" in chaves_unicas[0]
+        assert ":1:6:sources=" in chaves_unicas[1]

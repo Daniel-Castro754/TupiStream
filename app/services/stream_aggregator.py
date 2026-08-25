@@ -119,10 +119,18 @@ ALL_SOURCE_IDS = frozenset(SOURCE_FLAG_BY_ID)
 
 
 def parse_source_ids(raw: str) -> frozenset[str]:
-    """Valida e normaliza a seleção transportada no caminho do manifest."""
-    values = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    """
+    Valida a seleção transportada no caminho do manifest.
+
+    IDs são API pública persistente: lowercase, únicos e nunca reutilizados.
+    O Path do FastAPI aplica a mesma regra, e a função permanece estrita para
+    chamadas diretas em testes ou código interno.
+    """
+    values = [part.strip() for part in raw.split(",") if part.strip()]
     if not values:
         raise ValueError("selecione pelo menos uma fonte")
+    if any(value != value.lower() for value in values):
+        raise ValueError("IDs de fonte devem usar letras minúsculas")
     unknown = sorted(set(values) - ALL_SOURCE_IDS)
     if unknown:
         raise ValueError(f"fontes desconhecidas: {', '.join(unknown)}")
@@ -275,7 +283,7 @@ MIN_BUDGET_TITLE_FETCH = 2.0   # fetch de título Cinemeta/TMDB
 MAX_BUDGET_TITLE_FETCH = 4.0   # teto do fetch de título (não consome mais que isso)
 MIN_BUDGET_SCRAPERS = 1.0      # rodada de scrapers
 PLAY_SESSION_TTL_SECONDS = 1800  # 30 min — cobre delay, reload e navegacao entre conteudos
-STREAM_CACHE_VERSION = "v2"  # invalida caches anteriores ao filtro de relevância
+STREAM_CACHE_VERSION = "v3"  # invalida caches anteriores ao filtro de relevância
 
 
 class SearchBusyError(RuntimeError):
@@ -302,6 +310,31 @@ class StreamAggregator:
             }
             for scraper in self.scrapers
         }
+
+    def _effective_source_ids(
+        self, requested: frozenset[str] | None
+    ) -> frozenset[str]:
+        """Server-enabled sources intersected with the user's selection."""
+        enabled = frozenset(
+            source_id
+            for scraper in self.scrapers
+            if (source_id := SOURCE_ID_BY_CLASS.get(scraper.__class__)) is not None
+        )
+        return enabled if requested is None else enabled & requested
+
+    @staticmethod
+    def _stream_cache_key(
+        imdb_id: str,
+        content_type: str,
+        season: int | None,
+        episode: int | None,
+        effective_sources: frozenset[str],
+    ) -> str:
+        key = f"streams:{STREAM_CACHE_VERSION}:{imdb_id}:{content_type}"
+        if season is not None and episode is not None:
+            key = f"{key}:{season}:{episode}"
+        source_key = ",".join(ordered_source_ids(effective_sources)) or "none"
+        return f"{key}:sources={source_key}"
 
     async def restore_health_from_cache(self) -> None:
         """
@@ -690,12 +723,19 @@ class StreamAggregator:
             f"(season={season}, episode={episode}, budget={settings.REQUEST_BUDGET_SECONDS}s)"
         )
 
-        cache_key = f"streams:{STREAM_CACHE_VERSION}:{imdb_id}:{type}"
-        if season is not None and episode is not None:
-            cache_key = f"{cache_key}:{season}:{episode}"
-        if selected_sources is not None:
-            source_key = ",".join(ordered_source_ids(selected_sources)) or "none"
-            cache_key = f"{cache_key}:sources={source_key}"
+        effective_sources = self._effective_source_ids(selected_sources)
+        # Known-but-admin-disabled selections are valid installed configs. They
+        # return an empty list without title lookup, cache or network work and
+        # recover automatically if the admin later enables the source.
+        if selected_sources is not None and not effective_sources:
+            logger.info(
+                f"[{req_id}] Nenhuma fonte selecionada está habilitada nesta instância"
+            )
+            return []
+
+        cache_key = self._stream_cache_key(
+            imdb_id, type, season, episode, effective_sources
+        )
         torrent_results = await self._get_cached_torrents(cache_key, req_id)
 
         if torrent_results is None:
@@ -709,7 +749,11 @@ class StreamAggregator:
                     t_start=t_start,
                     season=season,
                     episode=episode,
-                    selected_sources=selected_sources,
+                    # Legacy requests run every instantiated source; selected
+                    # routes use only the effective admin/user intersection.
+                    selected_sources=(
+                        effective_sources if selected_sources is not None else None
+                    ),
                 ),
             )
 
