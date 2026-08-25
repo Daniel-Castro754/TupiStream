@@ -1,7 +1,7 @@
 """BTIH canonicalization and source-security regressions."""
 
 import base64
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -78,13 +78,21 @@ class TestAffectedScrapers:
     def test_yts_skips_malformed_upstream_hash(self):
         assert YTSScraper()._parsear_torrent("Filme", {"hash": "abc"}) is None
 
-    def test_archive_identifier_stays_in_one_encoded_path_segment(self):
+    @pytest.mark.asyncio
+    async def test_archive_identifier_stays_in_one_encoded_path_segment(self):
         scraper = ArchiveOrgScraper()
-        scraper._get_bytes_limited = MagicMock(return_value=None)
-        # URL construction is covered indirectly by quoting implementation;
-        # malicious syntax must not be accepted as an Archive host.
-        assert scraper._url_permitida("https://archive.org/download/x") is True
-        assert scraper._url_permitida("https://evil.example/download/x") is False
+        scraper._get_bytes_limited = AsyncMock(return_value=None)
+        try:
+            assert await scraper._extrair_torrent("../item?admin=true#fragment", "Filme") is None
+        finally:
+            await scraper.close()
+
+        requested_url = scraper._get_bytes_limited.await_args.args[0]
+        assert requested_url.startswith("https://archive.org/download/")
+        assert "../" not in requested_url
+        assert "?admin=" not in requested_url
+        assert "#fragment" not in requested_url
+        assert "%2F" in requested_url and "%3F" in requested_url and "%23" in requested_url
 
 
 @pytest.mark.asyncio

@@ -45,11 +45,9 @@ class TestComandoFilmesAtual:
             "https://baixetorrents.net",
         ]
 
-    def test_hosts_antigos_e_destino_atual_estao_na_allowlist(self):
+    def test_somente_hosts_de_busca_atuais_estao_na_allowlist(self):
         scraper = ComandoFilmesScraper()
         hosts = scraper._hosts_permitidos()
-        assert "www.baixetorrents.net" in hosts
-        assert "baixetorrents.net" in hosts
         assert hosts == {"www.baixetorrents.net", "baixetorrents.net"}
 
     def test_parser_reconhece_html_atual_movies_list(self):
