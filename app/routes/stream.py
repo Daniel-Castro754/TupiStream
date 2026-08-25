@@ -19,7 +19,11 @@ from app.services.real_debrid import (
     RealDebridService,
     RealDebridTimeoutError,
 )
-from app.services.stream_aggregator import PLAY_SESSION_TTL_SECONDS, StreamAggregator
+from app.services.stream_aggregator import (
+    PLAY_SESSION_TTL_SECONDS,
+    SearchBusyError,
+    StreamAggregator,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,6 +68,18 @@ def proteger_resposta_com_token(response: Response) -> None:
 
 # Instancia global do agregador.
 aggregator = StreamAggregator()
+
+
+async def _get_streams_with_capacity(**kwargs):
+    """Traduz saturação interna para um 503 curto e explícito."""
+    try:
+        return await aggregator.get_streams(**kwargs)
+    except SearchBusyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Muitas buscas em andamento. Tente novamente em instantes.",
+            headers={"Retry-After": str(settings.SEARCH_RETRY_AFTER_SECONDS)},
+        ) from exc
 
 
 class _PlayLocks:
@@ -224,7 +240,7 @@ async def get_streams_with_rd(
     imdb_id, season, episode = _parse_stremio_id(id)
     token = rd_token if rd_token.lower() != "none" else None
 
-    streams = await aggregator.get_streams(
+    streams = await _get_streams_with_capacity(
         imdb_id=imdb_id,
         stremio_id=id.replace(".json", ""),
         type=type,
@@ -260,7 +276,7 @@ async def get_streams_hybrid(
     imdb_id, season, episode = _parse_stremio_id(id)
     token = rd_token if rd_token.lower() != "none" else None
 
-    streams = await aggregator.get_streams(
+    streams = await _get_streams_with_capacity(
         imdb_id=imdb_id,
         stremio_id=id.replace(".json", ""),
         type=type,
@@ -289,7 +305,7 @@ async def get_streams(type: ContentType, id: StreamIdPath, request: Request) -> 
     t0 = time.monotonic()
     imdb_id, season, episode = _parse_stremio_id(id)
 
-    streams = await aggregator.get_streams(
+    streams = await _get_streams_with_capacity(
         imdb_id=imdb_id,
         stremio_id=id.replace(".json", ""),
         type=type,

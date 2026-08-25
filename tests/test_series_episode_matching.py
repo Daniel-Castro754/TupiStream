@@ -138,6 +138,10 @@ class TestCacheKeyIsoladoPorEpisodio:
                     )
 
         chaves_consultadas = [call.args[0] for call in mock_cache.get.call_args_list]
-        assert chaves_consultadas[0] != chaves_consultadas[1]
-        assert chaves_consultadas[0].endswith(":1:5")
-        assert chaves_consultadas[1].endswith(":1:6")
+        # Single-flight reconsulta a mesma chave dentro do slot, antes do
+        # fan-out externo. O contrato deste teste é isolamento por episódio,
+        # não quantidade de leituras do cache.
+        chaves_unicas = list(dict.fromkeys(chaves_consultadas))
+        assert len(chaves_unicas) == 2
+        assert chaves_unicas[0].endswith(":1:5")
+        assert chaves_unicas[1].endswith(":1:6")

@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     # aplica o teto final menor depois do ranking.
     MAX_UPSTREAM_STREAMS: int = 100
 
+    # ── Concorrência de buscas ──
+    # Cada busca abre vários scrapers e páginas de detalhe. O semáforo limita
+    # quantos conteúdos DIFERENTES podem fazer esse fan-out ao mesmo tempo.
+    MAX_CONCURRENT_SEARCHES: int = 5
+    # Se todos os slots estiverem ocupados, falha rápido com 503 em vez de
+    # esperar até o timeout do Stremio mantendo mais requests na memória.
+    SEARCH_QUEUE_TIMEOUT_SECONDS: float = 0.25
+    SEARCH_RETRY_AFTER_SECONDS: int = 2
+
     # ── Scrapers — timeout por scraper ──
     SCRAPER_TIMEOUT_SECONDS: float = 8.0
 
