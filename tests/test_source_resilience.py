@@ -40,19 +40,15 @@ class TestComandoFilmesAtual:
     def test_dominio_atual_e_prioridade(self):
         scraper = ComandoFilmesScraper()
         assert scraper.base_url == "https://www.baixetorrents.net"
-        assert scraper._fallback_urls[:2] == [
+        assert scraper._fallback_urls == [
             "https://www.baixetorrents.net",
             "https://baixetorrents.net",
         ]
 
-    def test_hosts_antigos_e_destino_atual_estao_na_allowlist(self):
+    def test_somente_hosts_de_busca_atuais_estao_na_allowlist(self):
         scraper = ComandoFilmesScraper()
         hosts = scraper._hosts_permitidos()
-        assert "www.baixetorrents.net" in hosts
-        assert "baixetorrents.net" in hosts
-        assert "www.baixafilmestorrent.net" in hosts
-        assert "baixafilmestorrenthd.com" in hosts
-        assert "baixafilmestorrenthd.org" in hosts
+        assert hosts == {"www.baixetorrents.net", "baixetorrents.net"}
 
     def test_parser_reconhece_html_atual_movies_list(self):
         scraper = ComandoFilmesScraper()
@@ -119,9 +115,12 @@ class TestComandoFilmesAtual:
 class TestYtsOrigins:
     def test_origem_direta_que_funciona_e_priorizada(self):
         scraper = YTSScraper()
-        assert scraper.base_url == "https://yts.gg"
-        assert scraper._fallback_urls[0] == "https://yts.gg"
-        assert "https://yts.bz" in scraper._fallback_urls
+        assert scraper.base_url == "https://movies-api.accel.li"
+        assert scraper._fallback_urls == [
+            "https://movies-api.accel.li",
+            "https://yts.gg",
+            "https://yts.bz",
+        ]
 
 
 class TestArchiveOrgCdn:
