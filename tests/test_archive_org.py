@@ -91,18 +91,17 @@ class TestArchiveOrgScraper:
                 "docs": [{"identifier": "night_of_the_living_dead_1968", "title": "Night of the Living Dead"}]
             }
         }
-        torrent_response = MagicMock()
-        torrent_response.content = torrent_bytes
-
-        async def _get_side_effect(url):
-            if url.endswith(".torrent"):
-                return torrent_response
-            return search_response
-
-        with patch.object(scraper, "_get", AsyncMock(side_effect=_get_side_effect)):
+        with (
+            patch.object(scraper, "_get", AsyncMock(return_value=search_response)),
+            patch.object(
+                scraper, "_get_bytes_limited", AsyncMock(return_value=torrent_bytes)
+            ) as limited_get,
+        ):
             resultados = await scraper.search(
                 "Night of the Living Dead", "tt0063350", "movie"
             )
+
+        limited_get.assert_awaited_once()
 
         assert len(resultados) == 1
         torrent = resultados[0]

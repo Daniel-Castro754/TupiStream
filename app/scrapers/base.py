@@ -49,6 +49,10 @@ def get_req_id() -> str:
     return _current_req_id.get()
 
 
+class ResponseTooLargeError(ValueError):
+    """Resposta externa ultrapassou o limite de bytes descomprimidos."""
+
+
 class BaseScraper(ABC):
     """Classe base para todos os scrapers de torrent"""
 
@@ -316,6 +320,49 @@ class BaseScraper(ABC):
         if host_pedido and host_pedido == host_final:
             return True
         return self._url_permitida(url_final)
+
+    async def _get_bytes_limited(self, url: str, max_bytes: int) -> bytes | None:
+        """
+        Baixa bytes em streaming e aborta antes de materializar corpo enorme.
+
+        `httpx.Response.content` carrega tudo em memória. `aiter_bytes()` entrega
+        bytes já descomprimidos, então o teto também cobre respostas comprimidas
+        que expandem muito além do Content-Length transferido.
+        """
+        prefix = self._log_prefix()
+        self.last_error = None
+        try:
+            async with self.client.stream("GET", url) as response:
+                response.raise_for_status()
+                content_length = response.headers.get("content-length")
+                if content_length:
+                    try:
+                        declared = int(content_length)
+                    except ValueError:
+                        declared = 0
+                    if declared > max_bytes:
+                        raise ResponseTooLargeError(
+                            f"Content-Length {declared} excede limite {max_bytes}"
+                        )
+
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ResponseTooLargeError(
+                            f"resposta excede limite de {max_bytes} bytes"
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except ResponseTooLargeError as exc:
+            self.last_error = str(exc)
+            logger.warning(f"{prefix} resposta recusada: {exc}")
+            return None
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(f"{prefix} falha no download limitado: {type(exc).__name__}")
+            return None
 
     async def _get_with_fallback(self, urls: list[str]) -> httpx.Response | None:
         """

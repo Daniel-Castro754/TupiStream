@@ -2,6 +2,7 @@ import asyncio
 import logging
 from urllib.parse import quote
 
+from app.models.config import settings
 from app.models.torrent import TorrentResult
 from app.scrapers.base import BaseScraper
 from app.scrapers.bencode import parse_torrent
@@ -109,12 +110,14 @@ class ArchiveOrgScraper(BaseScraper):
         """Baixa o .torrent oficial do item (hospedado e semeado pelo IA) e
         monta o magnet a partir do info_hash real do arquivo."""
         torrent_url = f"{self.base_url}/download/{identifier}/{identifier}_archive.torrent"
-        response = await self._get(torrent_url)
-        if not response:
+        torrent_bytes = await self._get_bytes_limited(
+            torrent_url, settings.MAX_TORRENT_BYTES
+        )
+        if torrent_bytes is None:
             return None
 
         try:
-            top, info_hash = parse_torrent(response.content)
+            top, info_hash = parse_torrent(torrent_bytes)
         except Exception as e:
             logger.warning(f"[{self.name}] Falha ao decodificar torrent de '{identifier}': {e}")
             return None
