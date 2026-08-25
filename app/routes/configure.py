@@ -17,11 +17,11 @@ SCRAPER_UI_INFO: dict[str, dict[str, str]] = {
     },
     "ENABLE_HDR_TORRENT": {
         "emoji": "&#x1F4FA;",
-        "description": "Fonte BR com foco em 4K, HDR e Dolby Vision.",
+        "description": "Implementação pronta, mas os domínios configurados não resolvem DNS.",
     },
     "ENABLE_MICOLEAO": {
         "emoji": "&#x1F981;",
-        "description": "Fonte BR focada em conteudo dublado.",
+        "description": "Implementação pronta, mas os domínios configurados não resolvem DNS.",
     },
     "ENABLE_BRAZUCA": {
         "emoji": "&#x1F310;",
@@ -37,15 +37,15 @@ SCRAPER_UI_INFO: dict[str, dict[str, str]] = {
     },
     "ENABLE_TORRENT_GALAXY": {
         "emoji": "&#x1F6E1;",
-        "description": "Desativado por padrao. Plain HTTP scraping costuma bater em anti-bot.",
+        "description": "Domínio principal sem DNS; mirrors testados responderam 403 anti-bot.",
     },
     "ENABLE_1337X": {
         "emoji": "&#x1F512;",
-        "description": "Desativado por padrao. Plain HTTP scraping costuma falhar em cloud.",
+        "description": "Domínio e mirrors testados responderam 403 anti-bot.",
     },
     "ENABLE_RUTRACKER": {
         "emoji": "&#x1F510;",
-        "description": "Desativado por padrao. Busca publica limitada e topicos frequentemente exigem login.",
+        "description": "Busca pública bloqueada por 403; magnets de tópicos podem exigir login.",
     },
 }
 
@@ -53,6 +53,7 @@ STABILITY_LABELS: dict[str, str] = {
     "estável": "Estavel",
     "bloqueado_antibot": "Bloqueado por anti-bot",
     "não_confiável_cloud": "Nao confiavel em cloud",
+    "dominio_indisponivel": "Dominio indisponivel",
 }
 
 SOURCE_TYPE_BY_FLAG = {
