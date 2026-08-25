@@ -17,6 +17,7 @@ class HDRTorrentScraper(BaseScraper):
 
     name = "HDR Torrent"
     base_url = "https://www.hdrtorrent.net"
+    stability = "dominio_indisponivel"
     _fallback_urls = [
         "https://www.hdrtorrent.net",
         "https://hdrtorrent.com",

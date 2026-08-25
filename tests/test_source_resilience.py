@@ -218,6 +218,7 @@ class TestHealthDeOrigens:
         assert comando["active_origin"] == "https://www.baixetorrents.net"
         assert comando["configured_mirrors"] >= 2
         assert health["hdr"]["status"] == "disabled"
+        assert health["hdr"]["configured_mirrors"] == 2
 
     def test_cooldown_e_um_estado_distinto(self, monkeypatch):
         with patch(

@@ -17,6 +17,7 @@ class MicoLeaoScraper(BaseScraper):
 
     name = "MicoLeão Dublado"
     base_url = "https://www.micoleaodublado.net"
+    stability = "dominio_indisponivel"
     _fallback_urls = [
         "https://www.micoleaodublado.net",
         "https://micoleaodublado.com.br",
