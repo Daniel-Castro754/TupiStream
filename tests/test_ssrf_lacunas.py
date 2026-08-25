@@ -97,18 +97,21 @@ class TestRedirectNaoContaminaOSingleton:
             await s.close()
 
     @pytest.mark.asyncio
-    async def test_redirect_para_host_nao_declarado_nao_vira_estado(self):
+    async def test_redirect_para_host_nao_declarado_nunca_e_acessado(self):
         s = HDRTorrentScraper()
-        original = s.base_url
         try:
-            # pedimos um mirror declarado; a resposta veio de outro lugar
-            s.client.get = AsyncMock(return_value=_resposta("http://169.254.169.254/x"))
+            redirect = MagicMock(status_code=302)
+            redirect.url = "https://www.hdrtorrent.net/p"
+            redirect.headers = {"location": "http://169.254.169.254/x"}
+            s.client.get = AsyncMock(return_value=redirect)
+
             resposta = await s._get_with_fallback(["https://www.hdrtorrent.net/p"])
 
-            assert resposta is not None, "a resposta desta requisicao continua sendo usada"
-            assert s.base_url == original, (
-                "o scraper e singleton — adotar contamina o processo inteiro"
+            assert resposta is None
+            assert s.client.get.await_count == 1, (
+                "o destino privado nao pode receber a segunda requisicao"
             )
+            assert "redirect" in (s.last_error or "")
         finally:
             await s.close()
 

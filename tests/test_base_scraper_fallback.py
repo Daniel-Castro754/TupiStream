@@ -10,6 +10,12 @@ from app.scrapers.base import BaseScraper, set_req_id
 class _DummyScraper(BaseScraper):
     name = "Dummy"
     base_url = "http://dummy-original.com"
+    _fallback_urls = [
+        "http://dummy",
+        "https://mirror1.com",
+        "https://mirror2.com",
+        "https://mirror-novo.com",
+    ]
 
     async def search(self, query, imdb_id, type, season=None, episode=None):
         return []

@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import ipaddress
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -26,6 +27,8 @@ _current_req_id: contextvars.ContextVar[str] = contextvars.ContextVar(
 DEFAULT_RETRIES = 1
 RETRY_BACKOFF_SECONDS = 0.4
 MAX_TRACKED_REQUEST_ERRORS = 256
+MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 # Headers realistas para evitar bloqueio
 DEFAULT_HEADERS = {
@@ -74,7 +77,9 @@ class BaseScraper(ABC):
         self._last_errors_by_req_id: dict[str, str | None] = {}
         self.client = httpx.AsyncClient(
             headers=DEFAULT_HEADERS,
-            follow_redirects=True,
+            # Redirect automático faz a requisição ao destino ANTES de termos
+            # chance de validá-lo. Cada Location é seguido manualmente.
+            follow_redirects=False,
             timeout=settings.SCRAPER_TIMEOUT_SECONDS,
         )
 
@@ -202,6 +207,78 @@ class BaseScraper(ABC):
         others = [url for url in urls if self._origin(url) != preferred_origin]
         return preferred + others
 
+    @staticmethod
+    def _literal_ip_is_global(host: str) -> bool:
+        """
+        Rejeita IP literal privado/loopback/link-local/reservado.
+
+        Nomes declarados continuam permitidos sem resolução extra; DNS
+        rebinding exige egress firewall para proteção conclusiva.
+        """
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return True
+        return address.is_global
+
+    async def _request_with_redirects(self, url: str) -> httpx.Response | None:
+        """Segue redirects somente após validar cada Location."""
+        current = url
+        for hop in range(MAX_REDIRECTS + 1):
+            if not self._url_permitida(current):
+                self.last_error = "URL/host nao permitido"
+                logger.warning(
+                    f"{self._log_prefix()} URL recusada antes da rede: {current[:120]}"
+                )
+                return None
+
+            host = (urlparse(current).hostname or "").lower().rstrip(".")
+            if not self._literal_ip_is_global(host):
+                self.last_error = "IP privado/nao global recusado"
+                logger.warning(
+                    f"{self._log_prefix()} IP nao global recusado antes da rede: {host}"
+                )
+                return None
+
+            response = await self.client.get(current, follow_redirects=False)
+            status = response.status_code
+            if status not in _REDIRECT_STATUSES:
+                return response
+
+            if hop >= MAX_REDIRECTS:
+                self.last_error = f"mais de {MAX_REDIRECTS} redirects"
+                logger.warning(f"{self._log_prefix()} cadeia de redirects excedida")
+                return None
+
+            location = response.headers.get("location")
+            if not isinstance(location, str) or not location.strip():
+                self.last_error = "redirect sem Location valido"
+                return None
+
+            try:
+                next_url = urljoin(str(response.url or current), location.strip())
+            except ValueError:
+                self.last_error = "Location invalido"
+                return None
+
+            if not self._url_permitida(next_url):
+                self.last_error = "redirect para host nao permitido"
+                logger.warning(
+                    f"{self._log_prefix()} redirect recusado antes da rede: {next_url[:120]}"
+                )
+                return None
+
+            next_host = (urlparse(next_url).hostname or "").lower().rstrip(".")
+            if not self._literal_ip_is_global(next_host):
+                self.last_error = "redirect para IP privado/nao global"
+                logger.warning(
+                    f"{self._log_prefix()} redirect para IP nao global recusado: {next_host}"
+                )
+                return None
+            current = next_url
+
+        return None
+
     async def _get(self, url: str, *, retries: int = DEFAULT_RETRIES) -> httpx.Response | None:
         """
         Faz GET com retry em falhas transitórias, métricas de tempo e
@@ -219,7 +296,9 @@ class BaseScraper(ABC):
         for tentativa in range(1, tentativas_totais + 1):
             t0 = time.monotonic()
             try:
-                response = await self.client.get(url)
+                response = await self._request_with_redirects(url)
+                if response is None:
+                    return None
                 elapsed = (time.monotonic() - t0) * 1000
                 status = response.status_code
 
@@ -371,21 +450,15 @@ class BaseScraper(ABC):
         O último domínio funcional passa a ser priorizado nas buscas seguintes,
         evitando repetir timeouts conhecidos antes de chegar ao mirror saudável.
 
-        Risco residual conhecido, e por que ele fica:
-          O cliente segue redirects, e `self.base_url` passa a ser o destino
-          final — inclusive um domínio novo, não declarado. Isso é
-          DELIBERADO: sites de torrent trocam de domínio com frequência, e é
-          essa adaptação que mantém o addon funcionando sem redeploy.
+        Segurança de redirects:
+          Cada Location é seguida manualmente por `_request_with_redirects`.
+          Host novo não declarado é recusado antes da segunda requisição.
+          Mudança legítima de domínio passa a exigir atualização explícita da
+          lista `_fallback_urls`, em troca de não transformar um mirror
+          comprometido em proxy para localhost/metadata de nuvem.
 
-          A consequência é que um mirror configurado, se comprometido, pode
-          redirecionar para endereço interno. Mas as URLs iniciais vêm de
-          `_fallback_urls`, que é código, não de HTML de terceiro — o vetor
-          que esta camada realmente precisava fechar era o href extraído da
-          página, e esse está fechado em `_resolver_link`.
-
-          Fechar também o redirect exige egress firewall na infraestrutura,
-          não validação de nome na aplicação: por nome não há como distinguir
-          "mirror novo legítimo" de "mirror comprometido".
+          DNS rebinding continua sendo risco residual; bloqueio de egress na
+          infraestrutura é a proteção conclusiva para redes privadas.
         """
         prefix = self._log_prefix()
         self.last_error = None
