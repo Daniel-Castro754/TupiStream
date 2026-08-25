@@ -5,6 +5,7 @@ from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup
 
+from app.info_hash import info_hash_from_magnet
 from app.models.torrent import TorrentResult
 from app.scrapers.base import BaseScraper
 from app.scrapers.relevance import build_series_queries, is_relevant_release, matches_episode
@@ -22,13 +23,11 @@ class ComandoFilmesScraper(BaseScraper):
     _fallback_urls = [
         "https://www.baixetorrents.net",
         "https://baixetorrents.net",
-        # Legados mantidos por último: úteis apenas enquanto continuarem
-        # redirecionando para um host explicitamente confiável acima.
-        "https://www.baixafilmestorrent.net",
-        "https://baixafilmestorrenthd.com",
-        "https://baixafilmestorrenthd.org",
-        "https://baixafilmestorrent.org",
     ]
+    # Os domínios legados não são mirrors de busca: redirecionam toda URL
+    # ``?s=...`` para a home canônica, descartando a consulta. Mantê-los aqui
+    # gastava budget parseando a homepage e ampliava a allowlist com domínios
+    # expirando/recompráveis sem oferecer fallback real.
 
     # Quantas páginas de detalhe (post individual) processar por busca.
     # Antes era 5 processadas em sequência; agora processamos em paralelo
@@ -214,11 +213,13 @@ class ComandoFilmesScraper(BaseScraper):
         if not magnet:
             return None
 
-        # Extrai info_hash do magnet
-        match = re.search(r"urn:btih:([a-fA-F0-9]+)", magnet)
-        if not match:
+        # Live series pages use lowercase 32-char Base32 BTIH. The old
+        # ``[a-fA-F0-9]+`` regex could accept only a one-character prefix as a
+        # bogus hash. Parse the complete xt parameter and canonicalize it.
+        info_hash = info_hash_from_magnet(magnet)
+        if info_hash is None:
+            self.last_error = "magnet com BTIH invalido"
             return None
-        info_hash = match.group(1).lower()
 
         # O layout atual usa um <h1> vazio no logo antes do título real.
         # `find("h1")` pegava esse elemento e todos os resultados saíam com

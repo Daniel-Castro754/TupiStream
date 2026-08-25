@@ -68,9 +68,9 @@ class TestProfundidadeComandoFilmes:
     @pytest.mark.asyncio
     async def test_processa_ate_max_detail_pages_em_paralelo(self):
         scraper = ComandoFilmesScraper()
-        links = [f"https://baixafilmestorrent.org/post-{i}/" for i in range(15)]
+        links = [f"https://www.baixetorrents.net/post-{i}/" for i in range(15)]
         response = MagicMock()
-        response.url = "https://baixafilmestorrent.org/?s=Filme"
+        response.url = "https://www.baixetorrents.net/?s=Filme"
         response.text = _fake_wordpress_html(links)
 
         tracker = {"atual": 0, "max": 0}

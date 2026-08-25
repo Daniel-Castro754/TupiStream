@@ -118,7 +118,11 @@ class ArchiveOrgScraper(BaseScraper):
     async def _extrair_torrent(self, identifier: str, titulo: str) -> TorrentResult | None:
         """Baixa o .torrent oficial do item (hospedado e semeado pelo IA) e
         monta o magnet a partir do info_hash real do arquivo."""
-        torrent_url = f"{self.base_url}/download/{identifier}/{identifier}_archive.torrent"
+        safe_identifier = quote(str(identifier), safe="")
+        torrent_url = (
+            f"{self.base_url}/download/{safe_identifier}/"
+            f"{safe_identifier}_archive.torrent"
+        )
         torrent_bytes = await self._get_bytes_limited(
             torrent_url, settings.MAX_TORRENT_BYTES
         )
