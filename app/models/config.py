@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Corta listas externas antes de criar modelos/deduplicar. O agregador
     # aplica o teto final menor depois do ranking.
     MAX_UPSTREAM_STREAMS: int = 100
+    # Limite sobre bytes já descomprimidos do arquivo .torrent. O parser aplica
+    # o mesmo teto como defesa em profundidade.
+    MAX_TORRENT_BYTES: int = 4 * 1024 * 1024
 
     # ── Concorrência de buscas ──
     # Cada busca abre vários scrapers e páginas de detalhe. O semáforo limita
