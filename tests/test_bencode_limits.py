@@ -103,9 +103,10 @@ class TestBencodeLimits:
             parse_torrent(payload)
 
     def test_tamanho_total_e_limitado(self, monkeypatch):
-        monkeypatch.setattr(bencode, "MAX_BENCODE_BYTES", 16)
+        payload = b"d4:infod1:a1:bee"
+        monkeypatch.setattr(bencode, "MAX_BENCODE_BYTES", len(payload) - 1)
         with pytest.raises(BencodeDecodeError, match="excede"):
-            parse_torrent(b"d4:infod1:a1:bee")
+            parse_torrent(payload)
 
     def test_quantidade_de_nos_e_limitada(self, monkeypatch):
         monkeypatch.setattr(bencode, "MAX_BENCODE_NODES", 5)
@@ -115,7 +116,7 @@ class TestBencodeLimits:
     def test_torrent_valido_preserva_hash_dos_bytes_brutos(self):
         import hashlib
 
-        info = b"d4:name5:filmee"
+        info = b"d4:name4:filee"
         payload = b"d4:info" + info + b"e"
         top, info_hash = parse_torrent(payload)
         assert top[b"info"] == {b"name": b"file"}
