@@ -231,6 +231,25 @@ class TestConfigureSourcePicker:
         assert "selected_sources" not in html
         assert "Sua selecao fica na URL instalada" in html
 
+    def test_env_example_documenta_todas_as_flags_administrativas(self):
+        import pathlib
+
+        env_example = pathlib.Path(__file__).resolve().parents[1] / ".env.example"
+        text = env_example.read_text(encoding="utf-8")
+        expected = {
+            "ENABLE_APACHE_TORRENT",
+            "ENABLE_COMANDO_FILMES",
+            "ENABLE_HDR_TORRENT",
+            "ENABLE_MICOLEAO",
+            "ENABLE_BRAZUCA",
+            "ENABLE_YTS",
+            "ENABLE_ARCHIVE_ORG",
+            "ENABLE_TORRENT_GALAXY",
+            "ENABLE_1337X",
+            "ENABLE_RUTRACKER",
+        }
+        assert all(f"{flag}=" in text for flag in expected)
+
     def test_interface_distingue_selecao_saude_e_disponibilidade(self):
         html = _build_config_html()
         assert "Fontes que desejo utilizar" in html
