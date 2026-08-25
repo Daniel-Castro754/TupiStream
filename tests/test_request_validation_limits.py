@@ -1,6 +1,6 @@
 """Validação de fronteira e limites de amplificação."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -74,7 +74,7 @@ class TestLimiteDoBrazuca:
     @pytest.mark.asyncio
     async def test_lista_externa_e_cortada_antes_do_parse(self):
         scraper = BrazucaAddonScraper()
-        response = AsyncMock()
+        response = MagicMock()
         response.json.return_value = {
             "streams": [
                 {"infoHash": f"{i:040x}", "title": f"Filme {i}"}
@@ -95,7 +95,7 @@ class TestLimiteDoBrazuca:
     @pytest.mark.asyncio
     async def test_streams_nao_lista_e_rejeitado(self):
         scraper = BrazucaAddonScraper()
-        response = AsyncMock()
+        response = MagicMock()
         response.json.return_value = {"streams": {"nao": "lista"}}
         try:
             with patch.object(scraper, "_get", AsyncMock(return_value=response)):
