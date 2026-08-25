@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.info_hash import normalize_info_hash
 
 
 class TorrentResult(BaseModel):
@@ -14,6 +16,14 @@ class TorrentResult(BaseModel):
     seeders: int | None = None
     file_idx: int | None = None
     sources: list[str] = Field(default_factory=list)
+
+    @field_validator("info_hash", mode="before")
+    @classmethod
+    def canonical_info_hash(cls, value: object) -> str:
+        normalized = normalize_info_hash(value)
+        if normalized is None:
+            raise ValueError("info_hash must be a 40-hex or 32-char Base32 BTIH")
+        return normalized
 
 
 class StreamResult(BaseModel):

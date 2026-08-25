@@ -265,6 +265,13 @@ class BaseScraper(ABC):
                 self.last_error = "Location invalido"
                 return None
 
+            if urlparse(current).scheme == "https" and urlparse(next_url).scheme != "https":
+                self.last_error = "redirect rebaixou HTTPS para HTTP"
+                logger.warning(
+                    f"{self._log_prefix()} downgrade HTTPS recusado: {next_url[:120]}"
+                )
+                return None
+
             if not self._url_permitida(next_url):
                 self.last_error = "redirect para host nao permitido"
                 logger.warning(
@@ -446,6 +453,12 @@ class BaseScraper(ABC):
                             )
                         except ValueError:
                             self.last_error = "Location invalido"
+                            return None
+                        if (
+                            urlparse(current).scheme == "https"
+                            and urlparse(next_url).scheme != "https"
+                        ):
+                            self.last_error = "redirect rebaixou HTTPS para HTTP"
                             return None
                         if not self._url_permitida(next_url):
                             self.last_error = "redirect para host nao permitido"

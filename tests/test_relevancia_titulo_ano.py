@@ -1,4 +1,4 @@
-"""
+r"""
 Dois bugs pré-existentes na normalização de títulos.
 
 1. Filmes cujo título É um ano — 1917, 2012, 1984, 2046, 1922 — normalizavam

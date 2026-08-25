@@ -1,6 +1,7 @@
 import logging
 from urllib.parse import quote
 
+from app.info_hash import normalize_info_hash
 from app.models.torrent import TorrentResult
 from app.scrapers.base import BaseScraper
 
@@ -21,15 +22,16 @@ class YTSScraper(BaseScraper):
     """Busca filmes pela API JSON usando o IMDb ID para evitar homônimos."""
 
     name = "YTS"
-    base_url = "https://yts.bz"
+    # The API response now announces this exact migration target, with a
+    # 2026-04-10 sunset for yts.gg. Keep the old live origin as fallback, but
+    # never learn/trust a host dynamically from response metadata.
+    base_url = "https://movies-api.accel.li"
     # Busca só por imdb_id — o texto de `query` nunca é usado.
     USES_TEXT_QUERY = False
     _fallback_urls = [
-        "https://yts.bz",
-        "https://yts.lt",
-        "https://yts.am",
-        "https://yts.ag",
+        "https://movies-api.accel.li",
         "https://yts.gg",
+        "https://yts.bz",
     ]
 
     async def search(
@@ -82,11 +84,9 @@ class YTSScraper(BaseScraper):
         return resultados
 
     def _parsear_torrent(self, titulo: str, torrent_info: dict) -> TorrentResult | None:
-        hash_val = str(torrent_info.get("hash") or "").strip()
-        if not hash_val:
+        info_hash = normalize_info_hash(torrent_info.get("hash"))
+        if info_hash is None:
             return None
-
-        info_hash = hash_val.lower()
         trackers_str = "&".join(f"tr={quote(tracker, safe=':/')}" for tracker in YTS_TRACKERS)
         magnet = f"magnet:?xt=urn:btih:{info_hash}&dn={quote(titulo)}&{trackers_str}"
 

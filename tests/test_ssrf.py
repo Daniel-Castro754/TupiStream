@@ -104,5 +104,7 @@ class TestComandoFilmesTemAMesmaProtecao:
 
     def test_recusa_destino_de_fora(self):
         s = ComandoFilmesScraper()
-        assert s._url_permitida("https://evil.example/?x=baixafilmestorrent.org") is False
-        assert s._url_permitida("https://baixafilmestorrent.org/filme/") is True
+        assert s._url_permitida("https://evil.example/?x=baixetorrents.net") is False
+        assert s._url_permitida("https://www.baixetorrents.net/filme/") is True
+        assert s._url_permitida("https://baixetorrents.net/filme/") is True
+        assert s._url_permitida("https://baixafilmestorrent.org/filme/") is False

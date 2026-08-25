@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from app.scrapers.archive_org import ArchiveOrgScraper
 from app.scrapers.comando_filmes import ComandoFilmesScraper
+from app.scrapers.yts import YTSScraper
 from app.services.stream_aggregator import StreamAggregator
 
 
@@ -39,19 +40,15 @@ class TestComandoFilmesAtual:
     def test_dominio_atual_e_prioridade(self):
         scraper = ComandoFilmesScraper()
         assert scraper.base_url == "https://www.baixetorrents.net"
-        assert scraper._fallback_urls[:2] == [
+        assert scraper._fallback_urls == [
             "https://www.baixetorrents.net",
             "https://baixetorrents.net",
         ]
 
-    def test_hosts_antigos_e_destino_atual_estao_na_allowlist(self):
+    def test_somente_hosts_de_busca_atuais_estao_na_allowlist(self):
         scraper = ComandoFilmesScraper()
         hosts = scraper._hosts_permitidos()
-        assert "www.baixetorrents.net" in hosts
-        assert "baixetorrents.net" in hosts
-        assert "www.baixafilmestorrent.net" in hosts
-        assert "baixafilmestorrenthd.com" in hosts
-        assert "baixafilmestorrenthd.org" in hosts
+        assert hosts == {"www.baixetorrents.net", "baixetorrents.net"}
 
     def test_parser_reconhece_html_atual_movies_list(self):
         scraper = ComandoFilmesScraper()
@@ -113,6 +110,17 @@ class TestComandoFilmesAtual:
             "https://www.baixetorrents.net/?s=Filme",
         )
         assert links == ["https://www.baixetorrents.net/filme/"]
+
+
+class TestYtsOrigins:
+    def test_origem_direta_que_funciona_e_priorizada(self):
+        scraper = YTSScraper()
+        assert scraper.base_url == "https://movies-api.accel.li"
+        assert scraper._fallback_urls == [
+            "https://movies-api.accel.li",
+            "https://yts.gg",
+            "https://yts.bz",
+        ]
 
 
 class TestArchiveOrgCdn:
@@ -209,6 +217,7 @@ class TestHealthDeOrigens:
         assert comando["active_origin"] == "https://www.baixetorrents.net"
         assert comando["configured_mirrors"] >= 2
         assert health["hdr"]["status"] == "disabled"
+        assert health["hdr"]["configured_mirrors"] == 2
 
     def test_cooldown_e_um_estado_distinto(self, monkeypatch):
         with patch(

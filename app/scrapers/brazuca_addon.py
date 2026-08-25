@@ -1,6 +1,7 @@
 import logging
 import re
 
+from app.info_hash import normalize_info_hash
 from app.models.config import settings
 from app.models.torrent import TorrentResult
 from app.scrapers.base import BaseScraper
@@ -86,8 +87,8 @@ class BrazucaAddonScraper(BaseScraper):
         intenção explícitos. Suportar url direta de verdade exigiria um campo
         próprio no modelo e validação de destino — mudança de escopo maior.
         """
-        info_hash = str(stream.get("infoHash") or "").lower().strip()
-        if not info_hash:
+        info_hash = normalize_info_hash(stream.get("infoHash"))
+        if info_hash is None:
             return None
 
         magnet = f"magnet:?xt=urn:btih:{info_hash}"
