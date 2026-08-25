@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit
 
@@ -238,11 +239,18 @@ PLAY_SESSION_TTL_SECONDS = 1800  # 30 min — cobre delay, reload e navegacao en
 STREAM_CACHE_VERSION = "v2"  # invalida caches anteriores ao filtro de relevância
 
 
+class SearchBusyError(RuntimeError):
+    """Todos os slots globais de busca estão ocupados."""
+
+
 class StreamAggregator:
     """Agrega resultados de múltiplos scrapers e integra com Real-Debrid"""
 
     def __init__(self) -> None:
         self.scrapers: list[BaseScraper] = _build_scraper_list()
+        self._inflight: dict[str, asyncio.Task[list[TorrentResult]]] = {}
+        self._inflight_guard = asyncio.Lock()
+        self._search_slots = asyncio.Semaphore(max(1, settings.MAX_CONCURRENT_SEARCHES))
         self.source_health: dict[str, dict] = {
             scraper.name: {
                 "status": "not_checked",
@@ -464,6 +472,140 @@ class StreamAggregator:
         )
         return titulo_original, titulo_ptbr
 
+    async def _singleflight(
+        self,
+        cache_key: str,
+        factory: Callable[[], Awaitable[list[TorrentResult]]],
+    ) -> list[TorrentResult]:
+        """
+        Compartilha uma única Task entre requests simultâneos da mesma chave.
+
+        Um lock + rechecagem de cache não basta: quando o resultado não pode
+        ser cacheado (falha total das fontes), cada waiter faria a mesma busca
+        em sequência. A Task compartilha inclusive resultado vazio/erro.
+
+        `shield` impede que o cancelamento de um cliente cancele a busca que
+        outros clientes aguardam. A Task continua e pode preencher o cache.
+        """
+        async with self._inflight_guard:
+            task = self._inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(factory())
+                self._inflight[cache_key] = task
+                logger.info(f"[SINGLEFLIGHT] nova busca compartilhada: {cache_key}")
+            else:
+                logger.info(f"[SINGLEFLIGHT] aguardando busca existente: {cache_key}")
+
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done():
+                async with self._inflight_guard:
+                    if self._inflight.get(cache_key) is task:
+                        self._inflight.pop(cache_key, None)
+
+    async def _acquire_search_slot(self, req_id: str) -> None:
+        try:
+            await asyncio.wait_for(
+                self._search_slots.acquire(),
+                timeout=settings.SEARCH_QUEUE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            logger.warning(
+                f"[{req_id}] [CAPACITY] todos os "
+                f"{settings.MAX_CONCURRENT_SEARCHES} slots de busca ocupados"
+            )
+            raise SearchBusyError("Capacidade de busca temporariamente esgotada") from exc
+
+    async def _search_and_cache(
+        self,
+        *,
+        cache_key: str,
+        imdb_id: str,
+        type: str,
+        req_id: str,
+        t_start: float,
+        season: int | None,
+        episode: int | None,
+    ) -> list[TorrentResult]:
+        await self._acquire_search_slot(req_id)
+        try:
+            # Uma Task pode ter aguardado o semáforo enquanto outra instância
+            # preenchia o cache. Rechecagem barata antes do fan-out externo.
+            cached = await self._get_cached_torrents(cache_key, req_id)
+            if cached is not None:
+                return cached
+
+            remaining = self._budget_remaining(t_start)
+            titulo_original, titulo_ptbr = await self._fetch_title(
+                imdb_id, type, req_id, remaining
+            )
+
+            titulo_resolvido = titulo_original != imdb_id or titulo_ptbr != imdb_id
+            if not titulo_resolvido:
+                logger.warning(
+                    f"[{req_id}] Titulo nao resolvido — buscando pelo imdb_id. "
+                    "Vazio resultante nao sera cacheado."
+                )
+
+            remaining = self._budget_para_scrapers(t_start)
+            if remaining > MIN_BUDGET_SCRAPERS:
+                resultado = await self._run_scrapers(
+                    titulo_ptbr,
+                    imdb_id,
+                    type,
+                    req_id,
+                    "ptbr",
+                    remaining,
+                    season=season,
+                    episode=episode,
+                )
+            else:
+                logger.warning(
+                    f"[{req_id}] Budget esgotado antes dos scrapers ({remaining:.1f}s)"
+                )
+                resultado = ScrapeOutcome(ran=False)
+
+            remaining = self._budget_para_scrapers(t_start)
+            if (
+                len(resultado.torrents) < 3
+                and titulo_original != titulo_ptbr
+                and remaining > MIN_BUDGET_SCRAPERS
+            ):
+                logger.info(
+                    f"[{req_id}] Poucos resultados ({len(resultado.torrents)}), "
+                    f"segunda rodada (budget={remaining:.1f}s)..."
+                )
+                extras = await self._run_scrapers(
+                    titulo_original,
+                    imdb_id,
+                    type,
+                    req_id,
+                    "original",
+                    remaining,
+                    season=season,
+                    episode=episode,
+                    skip_query_independent=True,
+                )
+                resultado = resultado.combinar(
+                    extras,
+                    self._deduplicate(resultado.torrents + extras.torrents),
+                )
+            elif len(resultado.torrents) < 3 and titulo_original != titulo_ptbr:
+                logger.warning(
+                    f"[{req_id}] Budget insuficiente para segunda rodada ({remaining:.1f}s)"
+                )
+
+            await self._cachear_busca(
+                cache_key,
+                resultado,
+                req_id,
+                permitir_cache_negativo=titulo_resolvido,
+            )
+            return resultado.torrents
+        finally:
+            self._search_slots.release()
+
     async def get_streams(
         self,
         imdb_id: str,
@@ -511,75 +653,17 @@ class StreamAggregator:
         torrent_results = await self._get_cached_torrents(cache_key, req_id)
 
         if torrent_results is None:
-            # Cache miss — busca títulos e roda scrapers dentro do budget
-            remaining = self._budget_remaining(t_start)
-            titulo_original, titulo_ptbr = await self._fetch_title(
-                imdb_id, type, req_id, remaining
-            )
-
-            # Quando o lookup de metadados falha — timeout, rede, 4xx —
-            # _fetch_title devolve o proprio imdb_id como "titulo". Os
-            # scrapers textuais entao buscam por "tt0816692", nao acham nada
-            # e respondem BEM: contam como ok_sources, o ScrapeOutcome fica
-            # "confiavel" e o vazio ia para o cache negativo como se o
-            # conteudo nao existisse.
-            #
-            # Nao existe: existe uma busca feita com a query errada. O
-            # deadline desta PR torna esse caminho MAIS frequente (antes a
-            # etapa podia gastar 16s e ter sucesso; agora e cortada em 4s),
-            # e e por isso que a correcao vem junto.
-            #
-            # YTS e Brazuca ignoram o texto e buscam por imdb_id, entao um
-            # resultado POSITIVO segue valido e cacheavel — o bloqueio vale
-            # so para o vazio.
-            # OU, nao E: basta um dos dois ter resolvido para a query usada
-            # pelos scrapers fazer sentido. _run_scrapers recebe titulo_ptbr
-            # na primeira rodada e titulo_original na segunda.
-            titulo_resolvido = titulo_original != imdb_id or titulo_ptbr != imdb_id
-            if not titulo_resolvido:
-                logger.warning(
-                    f"[{req_id}] Titulo nao resolvido — buscando pelo imdb_id. "
-                    "Vazio resultante nao sera cacheado."
-                )
-
-            # Primeira rodada (PT-BR)
-            remaining = self._budget_para_scrapers(t_start)
-            if remaining > MIN_BUDGET_SCRAPERS:
-                resultado = await self._run_scrapers(
-                    titulo_ptbr, imdb_id, type, req_id, "ptbr", remaining,
-                    season=season, episode=episode,
-                )
-            else:
-                logger.warning(f"[{req_id}] Budget esgotado antes dos scrapers ({remaining:.1f}s)")
-                resultado = ScrapeOutcome(ran=False)
-
-            # Segunda rodada (título original) — só se necessário e viável
-            remaining = self._budget_para_scrapers(t_start)
-            if (
-                len(resultado.torrents) < 3
-                and titulo_original != titulo_ptbr
-                and remaining > MIN_BUDGET_SCRAPERS
-            ):
-                logger.info(
-                    f"[{req_id}] Poucos resultados ({len(resultado.torrents)}), "
-                    f"segunda rodada (budget={remaining:.1f}s)..."
-                )
-                extras = await self._run_scrapers(
-                    titulo_original, imdb_id, type, req_id, "original", remaining,
-                    season=season, episode=episode, skip_query_independent=True,
-                )
-                resultado = resultado.combinar(
-                    extras, self._deduplicate(resultado.torrents + extras.torrents)
-                )
-            elif len(resultado.torrents) < 3 and titulo_original != titulo_ptbr:
-                logger.warning(
-                    f"[{req_id}] Budget insuficiente para segunda rodada ({remaining:.1f}s)"
-                )
-
-            torrent_results = resultado.torrents
-            await self._cachear_busca(
-                cache_key, resultado, req_id,
-                permitir_cache_negativo=titulo_resolvido,
+            torrent_results = await self._singleflight(
+                cache_key,
+                lambda: self._search_and_cache(
+                    cache_key=cache_key,
+                    imdb_id=imdb_id,
+                    type=type,
+                    req_id=req_id,
+                    t_start=t_start,
+                    season=season,
+                    episode=episode,
+                ),
             )
 
         # Ordena os torrents uma vez. No modo híbrido, cada torrent elegível
