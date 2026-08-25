@@ -1,6 +1,7 @@
 import logging
 import re
 
+from app.models.config import settings
 from app.models.torrent import TorrentResult
 from app.scrapers.base import BaseScraper
 
@@ -49,6 +50,13 @@ class BrazucaAddonScraper(BaseScraper):
             return resultados
 
         streams = data.get("streams", [])
+        if not isinstance(streams, list):
+            self.last_error = "campo streams nao e uma lista"
+            return resultados
+
+        # Limita ANTES de criar TorrentResult. Uma origem comprometida ou com
+        # bug não pode nos fazer instanciar/deduplicar milhares de objetos.
+        streams = streams[: settings.MAX_UPSTREAM_STREAMS]
 
         for stream in streams:
             try:

@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     # depois de o cliente ja ter desistido.
     PLAYBACK_BUDGET_SECONDS: float = 20.0
 
+    # ── Limites de resposta/upstream ──
+    # Um request com token cria uma play session por torrent. Sem teto, uma
+    # fonte que devolva milhares de itens vira milhares de linhas SQLite e
+    # cópias do token. O limite também mantém a UI do Stremio utilizável.
+    MAX_STREAMS_PER_REQUEST: int = 30
+    # Corta listas externas antes de criar modelos/deduplicar. O agregador
+    # aplica o teto final menor depois do ranking.
+    MAX_UPSTREAM_STREAMS: int = 100
+
     # ── Scrapers — timeout por scraper ──
     SCRAPER_TIMEOUT_SECONDS: float = 8.0
 

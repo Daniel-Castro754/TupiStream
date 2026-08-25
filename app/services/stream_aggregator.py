@@ -587,6 +587,18 @@ class StreamAggregator:
         pares = [(torrent, bool(rd_token and torrent.magnet)) for torrent in torrent_results]
         torrents_ordenados = [torrent for torrent, _ in _sort_streams(pares)]
 
+        max_streams = max(1, settings.MAX_STREAMS_PER_REQUEST)
+        # No modo híbrido cada torrent pode virar duas entradas (RD + P2P).
+        # Limitar torrents ANTES do loop também limita play sessions/SQLite.
+        max_torrents = max_streams // 2 if rd_token and include_p2p else max_streams
+        max_torrents = max(1, max_torrents)
+        if len(torrents_ordenados) > max_torrents:
+            logger.info(
+                f"[{req_id}] [LIMIT] {len(torrents_ordenados)} torrents ranqueados; "
+                f"processando os {max_torrents} primeiros"
+            )
+            torrents_ordenados = torrents_ordenados[:max_torrents]
+
         rd_streams: list[StreamResult] = []
         p2p_streams: list[StreamResult] = []
         play_sessions_count = 0
@@ -661,7 +673,7 @@ class StreamAggregator:
                 p2p_suppressed_count += 1
 
         # RD primeiro para preservar a experiência premium; P2P vem abaixo.
-        streams = rd_streams + p2p_streams
+        streams = (rd_streams + p2p_streams)[:max_streams]
 
         elapsed_total = (time.monotonic() - t_start) * 1000
         logger.info(
