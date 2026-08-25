@@ -21,15 +21,17 @@ class YTSScraper(BaseScraper):
     """Busca filmes pela API JSON usando o IMDb ID para evitar homônimos."""
 
     name = "YTS"
-    base_url = "https://yts.bz"
+    # yts.gg respondeu diretamente; yts.bz redireciona para ele. Priorizar o
+    # destino evita um salto em toda primeira consulta após restart.
+    base_url = "https://yts.gg"
     # Busca só por imdb_id — o texto de `query` nunca é usado.
     USES_TEXT_QUERY = False
     _fallback_urls = [
+        "https://yts.gg",
         "https://yts.bz",
         "https://yts.lt",
         "https://yts.am",
         "https://yts.ag",
-        "https://yts.gg",
     ]
 
     async def search(

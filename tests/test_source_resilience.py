@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from app.scrapers.archive_org import ArchiveOrgScraper
 from app.scrapers.comando_filmes import ComandoFilmesScraper
+from app.scrapers.yts import YTSScraper
 from app.services.stream_aggregator import StreamAggregator
 
 
@@ -113,6 +114,14 @@ class TestComandoFilmesAtual:
             "https://www.baixetorrents.net/?s=Filme",
         )
         assert links == ["https://www.baixetorrents.net/filme/"]
+
+
+class TestYtsOrigins:
+    def test_origem_direta_que_funciona_e_priorizada(self):
+        scraper = YTSScraper()
+        assert scraper.base_url == "https://yts.gg"
+        assert scraper._fallback_urls[0] == "https://yts.gg"
+        assert "https://yts.bz" in scraper._fallback_urls
 
 
 class TestArchiveOrgCdn:
