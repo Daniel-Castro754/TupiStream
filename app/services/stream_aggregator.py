@@ -98,6 +98,23 @@ SCRAPER_REGISTRY: list[tuple[str, type[BaseScraper]]] = [
     ("ENABLE_RUTRACKER",      RuTrackerScraper),
 ]
 
+SOURCE_ID_BY_FLAG: dict[str, str] = {
+    "ENABLE_APACHE_TORRENT": "apache",
+    "ENABLE_COMANDO_FILMES": "comando",
+    "ENABLE_HDR_TORRENT": "hdr",
+    "ENABLE_MICOLEAO": "micoleao",
+    "ENABLE_BRAZUCA": "brazuca",
+    "ENABLE_YTS": "yts",
+    "ENABLE_ARCHIVE_ORG": "archive",
+    "ENABLE_TORRENT_GALAXY": "torrentgalaxy",
+    "ENABLE_1337X": "1337x",
+    "ENABLE_RUTRACKER": "rutracker",
+}
+SOURCE_ID_BY_CLASS = {
+    scraper_cls: SOURCE_ID_BY_FLAG[flag_name]
+    for flag_name, scraper_cls in SCRAPER_REGISTRY
+}
+
 # ── Circuit breaker por fonte ──
 # Depois de N falhas seguidas (erro/indisponível — não conta "vazio", que é
 # uma busca normal sem resultado), a fonte fica em cooldown: os próximos
@@ -1087,24 +1104,41 @@ class StreamAggregator:
         return list(by_hash.values())
 
     def get_source_health(self) -> list[dict]:
-        """Retorna fontes ativas, desativadas e o resultado da última consulta."""
+        """Retorna disponibilidade administrativa e saúde operacional."""
         agora = time.monotonic()
+        by_name = {scraper.name: scraper for scraper in self.scrapers}
         items: list[dict] = []
         for flag_name, scraper_cls in SCRAPER_REGISTRY:
             enabled = bool(getattr(settings, flag_name, False))
             name = scraper_cls.name
+            source_id = SOURCE_ID_BY_FLAG[flag_name]
+            instance = by_name.get(name)
+            urls = [scraper_cls.base_url, *getattr(scraper_cls, "_fallback_urls", [])]
+            configured_origins = {
+                BaseScraper._origin(url) for url in urls if BaseScraper._origin(url)
+            }
+            active_origin = BaseScraper._origin(
+                instance.base_url if instance is not None else scraper_cls.base_url
+            )
             if enabled:
                 data = dict(self.source_health.get(name, {"status": "not_checked"}))
-                data.update(source=name, flag=flag_name, enabled=True)
-                # skip_until é um timestamp monotonic (relativo ao processo,
-                # sem época fixa) — não serve pra quem consome o /health de
-                # fora. Troca por segundos restantes, que é o que importa.
-                skip_until = data.pop("skip_until", None)
-                data["cooldown_remaining_seconds"] = (
-                    max(0, round(skip_until - agora)) if skip_until else 0
+                data.update(
+                    id=source_id,
+                    source=name,
+                    flag=flag_name,
+                    enabled=True,
+                    active_origin=active_origin,
+                    configured_mirrors=len(configured_origins),
                 )
+                skip_until = data.pop("skip_until", None)
+                remaining = max(0, round(skip_until - agora)) if skip_until else 0
+                data["cooldown_remaining_seconds"] = remaining
+                if remaining:
+                    data["status_before_cooldown"] = data.get("status", "error")
+                    data["status"] = "cooldown"
             else:
                 data = {
+                    "id": source_id,
                     "source": name,
                     "flag": flag_name,
                     "enabled": False,
@@ -1115,6 +1149,8 @@ class StreamAggregator:
                     "last_checked_at": None,
                     "consecutive_failures": 0,
                     "cooldown_remaining_seconds": 0,
+                    "active_origin": active_origin,
+                    "configured_mirrors": len(configured_origins),
                 }
             items.append(data)
         return items

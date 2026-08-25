@@ -128,6 +128,10 @@ class BaseScraper(ABC):
         }
         return frozenset(h for h in hosts if h)
 
+    def _host_permitido(self, host: str) -> bool:
+        """Política de host desta fonte. Subclasses podem estreitar ou ampliar."""
+        return host in self._hosts_permitidos()
+
     def _url_permitida(self, url: str) -> bool:
         """
         True quando a URL aponta para um host declarado pelo scraper.
@@ -169,7 +173,7 @@ class BaseScraper(ABC):
             return False
 
         host = (partes.hostname or "").lower().rstrip(".")
-        return host in permitidos
+        return self._host_permitido(host)
 
     def _resolver_link(self, href: str, url_da_pagina: str) -> str | None:
         """
@@ -404,36 +408,80 @@ class BaseScraper(ABC):
         """
         Baixa bytes em streaming e aborta antes de materializar corpo enorme.
 
-        `httpx.Response.content` carrega tudo em memória. `aiter_bytes()` entrega
-        bytes já descomprimidos, então o teto também cobre respostas comprimidas
-        que expandem muito além do Content-Length transferido.
+        Redirects são seguidos manualmente, com a mesma política SSRF de
+        `_get`. Isso é necessário para o Internet Archive: `archive.org`
+        entrega o `.torrent` por um CDN como `dn710105.ca.archive.org`.
         """
         prefix = self._log_prefix()
         self.last_error = None
+        current = url
         try:
-            async with self.client.stream("GET", url) as response:
-                response.raise_for_status()
-                content_length = response.headers.get("content-length")
-                if content_length:
-                    try:
-                        declared = int(content_length)
-                    except ValueError:
-                        declared = 0
-                    if declared > max_bytes:
-                        raise ResponseTooLargeError(
-                            f"Content-Length {declared} excede limite {max_bytes}"
-                        )
+            for hop in range(MAX_REDIRECTS + 1):
+                if not self._url_permitida(current):
+                    self.last_error = "URL/host nao permitido"
+                    logger.warning(f"{prefix} download recusado antes da rede: {current[:120]}")
+                    return None
 
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in response.aiter_bytes():
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise ResponseTooLargeError(
-                            f"resposta excede limite de {max_bytes} bytes"
-                        )
-                    chunks.append(chunk)
-                return b"".join(chunks)
+                host = (urlparse(current).hostname or "").lower().rstrip(".")
+                if not self._literal_ip_is_global(host):
+                    self.last_error = "IP privado/nao global recusado"
+                    return None
+
+                async with self.client.stream(
+                    "GET", current, follow_redirects=False
+                ) as response:
+                    status = response.status_code
+                    if status in _REDIRECT_STATUSES:
+                        if hop >= MAX_REDIRECTS:
+                            self.last_error = f"mais de {MAX_REDIRECTS} redirects"
+                            return None
+                        location = response.headers.get("location")
+                        if not isinstance(location, str) or not location.strip():
+                            self.last_error = "redirect sem Location valido"
+                            return None
+                        try:
+                            next_url = urljoin(
+                                str(getattr(response, "url", None) or current),
+                                location.strip(),
+                            )
+                        except ValueError:
+                            self.last_error = "Location invalido"
+                            return None
+                        if not self._url_permitida(next_url):
+                            self.last_error = "redirect para host nao permitido"
+                            return None
+                        next_host = (
+                            urlparse(next_url).hostname or ""
+                        ).lower().rstrip(".")
+                        if not self._literal_ip_is_global(next_host):
+                            self.last_error = "redirect para IP privado/nao global"
+                            return None
+                        current = next_url
+                        continue
+
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            declared = int(content_length)
+                        except ValueError:
+                            declared = 0
+                        if declared > max_bytes:
+                            raise ResponseTooLargeError(
+                                f"Content-Length {declared} excede limite {max_bytes}"
+                            )
+
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ResponseTooLargeError(
+                                f"resposta excede limite de {max_bytes} bytes"
+                            )
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+            return None
         except ResponseTooLargeError as exc:
             self.last_error = str(exc)
             logger.warning(f"{prefix} resposta recusada: {exc}")

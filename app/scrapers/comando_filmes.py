@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote
 
 from bs4 import BeautifulSoup
 
@@ -16,12 +16,18 @@ class ComandoFilmesScraper(BaseScraper):
     """Scraper para o site Comando Filmes (WordPress)"""
 
     name = "Comando Filmes"
-    base_url = "https://baixafilmestorrent.org"
+    # Os domínios antigos redirecionam para baixetorrents.net. O host com
+    # `www` respondeu 200 e expôs magnets em smoke test real (25/08/2026).
+    base_url = "https://www.baixetorrents.net"
     _fallback_urls = [
-        "https://baixafilmestorrent.org",
+        "https://www.baixetorrents.net",
+        "https://baixetorrents.net",
+        # Legados mantidos por último: úteis apenas enquanto continuarem
+        # redirecionando para um host explicitamente confiável acima.
         "https://www.baixafilmestorrent.net",
         "https://baixafilmestorrenthd.com",
         "https://baixafilmestorrenthd.org",
+        "https://baixafilmestorrent.org",
     ]
 
     # Quantas páginas de detalhe (post individual) processar por busca.
@@ -124,11 +130,15 @@ class ComandoFilmesScraper(BaseScraper):
     def _extrair_links_posts(self, soup: BeautifulSoup, url_da_pagina: str) -> list[str]:
         """Tenta múltiplos seletores WordPress em fallback"""
         seletores_article = [
+            "#main .movies-list .item",
+            ".kn-cards-container .kn-card",
             "article.post",
             "article",
             ".post",
         ]
         seletores_link = [
+            ".item .title a",
+            ".kn-card-title a",
             "h2.entry-title a",
             ".entry-title a",
             "h2 a",
@@ -138,7 +148,10 @@ class ComandoFilmesScraper(BaseScraper):
         for seletor in seletores_article:
             elementos = soup.select(seletor)
             if elementos:
-                logger.debug(f"[{self.name}] Seletor '{seletor}' retornou {len(elementos)} elementos")
+                logger.debug(
+                    f"[{self.name}] Seletor '{seletor}' retornou "
+                    f"{len(elementos)} elementos"
+                )
                 links: list[str] = []
                 for el in elementos:
                     link = self._extrair_link_de_article(el, url_da_pagina)
@@ -151,7 +164,10 @@ class ComandoFilmesScraper(BaseScraper):
         for seletor in seletores_link:
             elementos = soup.select(seletor)
             if elementos:
-                logger.debug(f"[{self.name}] Seletor '{seletor}' retornou {len(elementos)} elementos")
+                logger.debug(
+                    f"[{self.name}] Seletor '{seletor}' retornou "
+                    f"{len(elementos)} elementos"
+                )
                 links = []
                 for el in elementos:
                     link = self._resolver_link(el.get("href", ""), str(url_da_pagina))
@@ -164,7 +180,14 @@ class ComandoFilmesScraper(BaseScraper):
 
     def _extrair_link_de_article(self, article: BeautifulSoup, url_da_pagina: str) -> str | None:
         """Extrai o link principal de um elemento <article>"""
-        for sel in ["h2 a", "h3 a", ".entry-title a"]:
+        for sel in [
+            ".title a",
+            ".kn-card-title a",
+            ".kn-card-link",
+            "h2 a",
+            "h3 a",
+            ".entry-title a",
+        ]:
             tag = article.select_one(sel)
             if tag:
                 link = self._resolver_link(tag.get("href", ""), str(url_da_pagina))
@@ -197,9 +220,17 @@ class ComandoFilmesScraper(BaseScraper):
             return None
         info_hash = match.group(1).lower()
 
-        # Título da página
-        titulo_tag = soup.find("h1") or soup.find("title")
-        titulo = titulo_tag.get_text(strip=True) if titulo_tag else unquote(url_post.split("/")[-2])
+        # O layout atual usa um <h1> vazio no logo antes do título real.
+        # `find("h1")` pegava esse elemento e todos os resultados saíam com
+        # título vazio, sendo descartados pelo filtro de relevância.
+        titulo_tag = (
+            soup.select_one("h1.title, h1.entry-title, h1.post-title")
+            or soup.find("h1")
+            or soup.find("title")
+        )
+        titulo = titulo_tag.get_text(strip=True) if titulo_tag else ""
+        if not titulo:
+            titulo = unquote(url_post.split("/")[-2])
 
         return TorrentResult(
             title=titulo,
