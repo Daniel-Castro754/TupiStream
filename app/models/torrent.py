@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TorrentResult(BaseModel):
@@ -12,6 +12,8 @@ class TorrentResult(BaseModel):
     source: str  # nome da fonte, ex: "Apache Torrent"
     size: str | None = None
     seeders: int | None = None
+    file_idx: int | None = None
+    sources: list[str] = Field(default_factory=list)
 
 
 class StreamResult(BaseModel):
@@ -21,4 +23,6 @@ class StreamResult(BaseModel):
     title: str  # subtítulo com detalhes
     url: str | None = None  # link HTTP direto do RD
     infoHash: str | None = None  # fallback magnet (campo camelCase para Stremio)
-    behaviorHints: dict = {}  # behaviorHints do Stremio
+    fileIdx: int | None = None  # arquivo correto dentro do torrent
+    sources: list[str] | None = None  # trackers/DHT adicionais do Stremio
+    behaviorHints: dict = Field(default_factory=dict)
