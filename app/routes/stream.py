@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import re
 import time
 import uuid
 import weakref
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Path, Request, Response
 from fastapi.responses import RedirectResponse
 
 from app.models.config import settings
@@ -21,6 +23,14 @@ from app.services.stream_aggregator import PLAY_SESSION_TTL_SECONDS, StreamAggre
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+ContentType = Literal["movie", "series"]
+TokenPath = Annotated[str, Path(min_length=1, max_length=256)]
+StreamIdPath = Annotated[str, Path(min_length=9, max_length=64)]
+PlayIdPath = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")]
+_MOVIE_ID_RE = re.compile(r"^tt[0-9]{7,10}$")
+_SERIES_ID_RE = re.compile(r"^tt[0-9]{7,10}:[0-9]{1,4}:[0-9]{1,4}$")
+
 PLAY_NOT_READY_RETRY_AFTER_SECONDS = 2
 # Retry mais conservador no 504: enquanto o fluxo RD nao for idempotente
 # (o retry recomeca no addMagnet), convidar a repetir rapido multiplica
@@ -153,6 +163,18 @@ def _request_base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+def _validate_stream_id(content_type: ContentType, raw_id: str) -> None:
+    """Rejeita antes de tocar cache, Cinemeta, scrapers ou Real-Debrid."""
+    value = raw_id.removesuffix(".json")
+    pattern = _MOVIE_ID_RE if content_type == "movie" else _SERIES_ID_RE
+    if not pattern.fullmatch(value):
+        expected = "tt1234567" if content_type == "movie" else "tt1234567:1:5"
+        raise HTTPException(
+            status_code=422,
+            detail=f"ID invalido para {content_type}. Formato esperado: {expected}",
+        )
+
+
 def _parse_stremio_id(id: str) -> tuple[str, int | None, int | None]:
     """
     Extrai imdb_id, season e episode do id do Stremio.
@@ -181,7 +203,11 @@ def _parse_stremio_id(id: str) -> tuple[str, int | None, int | None]:
 
 @router.get("/{rd_token}/stream/{type}/{id}.json")
 async def get_streams_with_rd(
-    rd_token: str, type: str, id: str, request: Request, response: Response
+    rd_token: TokenPath,
+    type: ContentType,
+    id: StreamIdPath,
+    request: Request,
+    response: Response,
 ) -> dict:
     """
     Endpoint de streams com token RD no path.
@@ -191,6 +217,7 @@ async def get_streams_with_rd(
       o token em logs manuais; o risco residual fica nos access logs da infra.
     """
     proteger_resposta_com_token(response)
+    _validate_stream_id(type, id)
     req_id = uuid.uuid4().hex[:8]
     set_req_id(req_id)
     t0 = time.monotonic()
@@ -218,14 +245,15 @@ async def get_streams_with_rd(
 
 @router.get("/hybrid/{rd_token}/stream/{type}/{id}.json")
 async def get_streams_hybrid(
-    rd_token: str,
-    type: str,
-    id: str,
+    rd_token: TokenPath,
+    type: ContentType,
+    id: StreamIdPath,
     request: Request,
     response: Response,
 ) -> dict:
     """Endpoint híbrido: resultados Real-Debrid e P2P na mesma busca."""
     proteger_resposta_com_token(response)
+    _validate_stream_id(type, id)
     req_id = uuid.uuid4().hex[:8]
     set_req_id(req_id)
     t0 = time.monotonic()
@@ -253,8 +281,9 @@ async def get_streams_hybrid(
 
 
 @router.get("/stream/{type}/{id}.json")
-async def get_streams(type: str, id: str, request: Request) -> dict:
+async def get_streams(type: ContentType, id: StreamIdPath, request: Request) -> dict:
     """Endpoint de streams sem token RD."""
+    _validate_stream_id(type, id)
     req_id = uuid.uuid4().hex[:8]
     set_req_id(req_id)
     t0 = time.monotonic()
@@ -279,7 +308,7 @@ async def get_streams(type: str, id: str, request: Request) -> dict:
 
 
 @router.api_route("/play/{play_id}", methods=["GET", "HEAD"])
-async def play_stream(play_id: str, request: Request):
+async def play_stream(play_id: PlayIdPath, request: Request):
     """
     Serializa por play_id e delega.
 
