@@ -1,206 +1,219 @@
-# BR Streams 🇧🇷
+# Tupi Stream 🇧🇷
 
-> Addon Stremio agregador de torrents PT-BR com integração Real-Debrid
+> Seu agregador comunitário PT-BR para Stremio.
 
----
+Tupi Stream reúne múltiplas fontes de filmes e séries em português brasileiro e organiza os resultados para uso no Stremio, com suporte a P2P e integração opcional com Real-Debrid.
 
-## O que é
+## ✨ Destaques
 
-Addon Stremio que agrega torrents de filmes e séries dublados/dual áudio em
-português brasileiro de múltiplas fontes, com suporte a Real-Debrid para
-streaming direto sem necessidade de VPN.
+- 🇧🇷 Foco em conteúdo dublado e dual áudio PT-BR
+- 🔎 Agregação de múltiplas fontes
+- ⚡ Consultas em paralelo
+- 🧲 Reprodução P2P via infoHash
+- ☁️ Integração opcional com Real-Debrid
+- 🎞️ Suporte a filmes e séries
+- 🐳 Docker pronto para uso
+- 🧩 Arquitetura modular para novas fontes
 
-## Fontes
+## 📚 Fontes atuais
 
 | Fonte | Tipo | Conteúdo |
-|-------|------|----------|
+|---|---|---|
 | 🔥 Apache Torrent | Web scraping | Dublado / Dual Áudio |
 | 🎬 Comando Filmes | Web scraping | Dublado / Dual Áudio |
-| 🦁 MicoLeão Dublado | Web scraping | Especialista em dublagem |
+| 🦁 MicoLeão Dublado | Web scraping | Foco em dublagem |
 | 📺 HDR Torrent | Web scraping | 4K / HDR / Dolby Vision |
-| 🌐 Brazuca Torrents | Addon proxy | Acervo consolidado BR |
-| 📚 Internet Archive | API pública | Domínio público / licença aberta (filmes) |
+| 🌐 Brazuca Torrents | Addon proxy | Acervo brasileiro |
+| 📚 Internet Archive | API pública | Domínio público / licenças abertas |
 
-`Internet Archive` é diferente das demais: não faz scraping nem depende de
-bypass de proteção anti-bot — usa a API pública e documentada do
-archive.org, e os torrents vêm do próprio acervo hospedado e semeado pelo
-Internet Archive. Cobre bem clássicos de domínio público e conteúdo com
-licença Creative Commons; não é uma fonte para lançamentos mainstream
-recentes.
+O Internet Archive funciona de forma diferente das demais fontes: utiliza a API pública do archive.org e é voltado principalmente a obras de domínio público ou disponibilizadas sob licenças abertas.
 
-## Instalação rápida
+## 🚀 Instalação
 
-1. Acesse a página de configuração do addon
-2. Insira seu token Real-Debrid (opcional, mas recomendado)
-3. Clique em "Instalar no Stremio"
+1. Abra a página `/configure` da instância do Tupi Stream.
+2. Informe seu token Real-Debrid, caso queira utilizar o serviço.
+3. Escolha se também deseja exibir opções P2P.
+4. Clique em **Instalar no Stremio**.
 
-## Modos de reproducao
+## ▶️ Modos de reprodução
 
-- **P2P gratuito:** deixe o token Real-Debrid vazio. O Stremio recebe o
-  `infoHash` e tenta reproduzir pelo swarm.
-- **Real-Debrid:** informe o token e mantenha a opcao P2P desmarcada.
-- **Hibrido:** informe o token e marque "Tambem mostrar opcoes P2P". Cada
-  torrent elegivel aparece como opcao RD e como opcao P2P.
+### P2P gratuito
 
-No modo P2P, a disponibilidade e a velocidade dependem de seeders, trackers,
-rede e suporte do cliente. Use apenas conteudo que voce tenha direito de acessar.
+Sem token Real-Debrid, o addon envia o `infoHash` ao Stremio e o cliente tenta reproduzir o conteúdo pelo swarm.
 
-## Rodando localmente
+### Real-Debrid
+
+Com um token configurado, o addon consulta o serviço e prioriza opções disponíveis pelo Real-Debrid.
+
+### Híbrido
+
+É possível usar Real-Debrid e, ao mesmo tempo, manter opções P2P visíveis.
+
+> A velocidade e a disponibilidade no modo P2P dependem de seeders, trackers, rede e suporte do cliente.
+
+## 🔐 Segurança do token Real-Debrid
+
+A implementação atual ainda possui uma limitação importante:
+
+- o token faz parte do caminho da URL do manifest;
+- URLs podem aparecer em histórico do navegador e logs de infraestrutura;
+- sessões temporárias de playback podem manter o token no cache SQLite por até aproximadamente 30 minutos.
+
+**Nunca compartilhe sua URL pessoal de manifest.** Compartilhe apenas a página `/configure`.
+
+Caso seu token tenha sido exposto, gere um novo token diretamente no Real-Debrid.
+
+Melhorar esse fluxo de autenticação é uma prioridade técnica do projeto.
+
+## 🛠️ Rodando localmente
 
 ### Pré-requisitos
-- Python 3.11+
-- (Opcional) Token Real-Debrid: https://real-debrid.com/apitoken
 
-### Passos
+- Python 3.11+
+- Git
+- Token Real-Debrid opcional
+
+### Instalação
 
 ```bash
-git clone https://github.com/Daniel-Castro754/br-stremio-addon
-cd br-stremio-addon
+git clone https://github.com/Daniel-Castro754/TupiStream.git
+cd TupiStream
 
 python -m venv venv
-# Windows:
+```
+
+Windows:
+
+```bash
 venv\Scripts\activate
-# Linux/Mac:
+```
+
+Linux/macOS:
+
+```bash
 source venv/bin/activate
+```
 
+Instale as dependências:
+
+```bash
 pip install -r requirements.txt
-
 cp .env.example .env
-
 python -m app.main
 ```
 
-Acesse http://localhost:8000/configure para configurar e instalar.
+Depois acesse:
 
-## Rodando com Docker
+```text
+http://localhost:8000/configure
+```
+
+## 🐳 Docker
 
 ```bash
-docker build -t br-stremio-addon .
-docker run -p 8000:8000 -v $(pwd)/data:/app/data br-stremio-addon
+docker build -t tupistream .
+docker run -p 8000:8000 -v $(pwd)/data:/app/data tupistream
 ```
 
-## Deploy
+## ☁️ Deploy
 
-### Railway (recomendado)
-1. Fork este repositório
-2. Crie um projeto no Railway.app
-3. Conecte o repositório
-4. Adicione `BASE_URL` com a URL pública gerada pelo Railway
-5. Deploy automático via Dockerfile
+### Railway
+
+1. Faça um fork do repositório.
+2. Crie um projeto no Railway.
+3. Conecte o repositório.
+4. Configure `BASE_URL` com a URL pública da aplicação.
+5. Faça o deploy usando o Dockerfile existente.
 
 ### Render
-1. Fork este repositório
-2. Crie um Web Service no Render.com
-3. Escolha "Docker" como runtime
-4. Adicione `BASE_URL` nas env vars
-5. O `render.yaml` já configura disco persistente para o cache SQLite
 
-## Compartilhando com outras pessoas
+1. Faça um fork do repositório.
+2. Crie um Web Service.
+3. Escolha Docker como runtime.
+4. Configure `BASE_URL`.
+5. Utilize o `render.yaml` incluído no projeto.
 
-Após fazer o deploy público (Railway/Render), qualquer pessoa pode usar o addon:
-
-1. Compartilhe apenas o link da página de configuração:
-   `https://SEU-DOMINIO.railway.app/configure`
-
-2. Cada usuário insere o próprio token Real-Debrid
-
-3. O addon funciona independente para cada usuário — cada um usa o
-   próprio token Real-Debrid
-
-### Onde o seu token fica, de verdade
-
-Esta seção afirmava que "o servidor não armazena tokens". **Isso estava
-incorreto.** O comportamento real, hoje:
-
-- **O token vai no caminho da URL** (`/SEU-TOKEN/manifest.json`). Caminho de
-  URL aparece em log de acesso de proxy, no histórico do navegador e na URL
-  que o próprio Stremio guarda. HTTPS não protege isso: ele cifra o corpo,
-  não esconde o endereço.
-- **O servidor guarda o token por até 30 minutos.** Ao montar a lista de
-  streams, o addon cria uma sessão de playback por torrent, e cada uma
-  carrega uma cópia do token. Elas ficam em `data/cache.db`, em texto puro —
-  e no Render esse caminho é um disco persistente, que sobrevive a deploy.
-
-**Importante:** nunca compartilhe sua URL de manifest. Ela contém seu token
-e dá acesso de streaming à sua conta — compartilhe a página `/configure`.
-
-Se você já compartilhou uma URL de manifest, ou se ela apareceu em algum log
-que não é seu, **gere um token novo** em real-debrid.com/apitoken. Log e
-histórico antigos não têm como ser limpos retroativamente.
-
-## Variáveis de ambiente
+## ⚙️ Variáveis de ambiente
 
 | Variável | Padrão | Descrição |
-|----------|--------|-----------|
-| PORT | 8000 | Porta do servidor |
-| BASE_URL | http://localhost:8000 | URL pública do addon |
-| LOG_LEVEL | info | Nível de log (debug/info/warning) |
-| CACHE_TTL | 3600 | Tempo de cache em segundos (1h) |
-| CACHE_DB_PATH | data/cache.db | Caminho do banco SQLite |
-| TMDB_API_KEY | *(vazio)* | Opcional — melhora busca de títulos PT-BR |
+|---|---|---|
+| `PORT` | `8000` | Porta HTTP |
+| `BASE_URL` | `http://localhost:8000` | URL pública do addon |
+| `LOG_LEVEL` | `info` | Nível de log |
+| `CACHE_TTL` | `3600` | Tempo de cache em segundos |
+| `CACHE_DB_PATH` | `data/cache.db` | Banco SQLite de cache |
+| `TMDB_API_KEY` | vazio | Melhora buscas de títulos PT-BR |
 
-## Arquitetura
+## 🧠 Arquitetura
 
+```text
+Stremio
+  ↓
+/stream/{type}/{imdb_id}
+  ↓
+StreamAggregator
+  ├── SQLiteCache
+  ├── ApacheTorrentScraper
+  ├── ComandoFilmesScraper
+  ├── MicoLeaoScraper
+  ├── HDRTorrentScraper
+  ├── BrazucaAddonScraper
+  └── ArchiveOrgScraper
+  ↓
+RealDebridService (opcional)
+  ↓
+Ordenação e rotulagem dos resultados
+  ↓
+Stremio
 ```
-Stremio → /stream/{type}/{imdb_id}
-              ↓
-    StreamAggregator
-    ├── SQLiteCache (verifica cache)
-    ├── [paralelo] ApacheTorrentScraper
-    ├── [paralelo] ComandoFilmesScraper
-    ├── [paralelo] MicoLeaoScraper
-    ├── [paralelo] HDRTorrentScraper
-    ├── [paralelo] BrazucaAddonScraper
-    └── [paralelo] ArchiveOrgScraper
-              ↓
-    RealDebridService (check cache + unrestrict)
-              ↓
-    Streams ordenados (RD > qualidade > dublado > seeders)
-              ↓
-    Stremio exibe resultados
-```
 
-## Estrutura do projeto
+## 🗂️ Estrutura
 
-```
-br-stremio-addon/
+```text
+TupiStream/
 ├── app/
 │   ├── main.py
 │   ├── manifest.py
 │   ├── models/
-│   │   ├── config.py
-│   │   └── torrent.py
 │   ├── routes/
-│   │   ├── stream.py
-│   │   └── configure.py
 │   ├── scrapers/
-│   │   ├── base.py
-│   │   ├── apache_torrent.py
-│   │   ├── comando_filmes.py
-│   │   ├── hdr_torrent.py
-│   │   ├── micoleao.py
-│   │   └── brazuca_addon.py
 │   └── services/
-│       ├── cache.py
-│       ├── labeler.py
-│       ├── real_debrid.py
-│       └── stream_aggregator.py
 ├── data/
-├── .env.example
-├── .dockerignore
-├── .github/workflows/docker.yml
+├── .github/
 ├── Dockerfile
 ├── railway.json
 ├── render.yaml
 └── requirements.txt
 ```
 
-## Adicionando novas fontes
+## 🤝 Contribuindo
 
-1. Criar `app/scrapers/nova_fonte.py` herdando `BaseScraper`
-2. Implementar `async search(query, imdb_id, type) -> list[TorrentResult]`
-3. Adicionar instância em `stream_aggregator.py`
+Contribuições são bem-vindas.
 
-## Licença
+Algumas formas de ajudar:
+
+- adicionar novas fontes;
+- melhorar os scrapers existentes;
+- criar testes automatizados;
+- melhorar cache e desempenho;
+- revisar segurança e privacidade;
+- melhorar documentação e experiência de configuração.
+
+Consulte [`CONTRIBUTING.md`](CONTRIBUTING.md) antes de enviar alterações.
+
+## ➕ Adicionando uma nova fonte
+
+1. Crie `app/scrapers/nova_fonte.py` herdando `BaseScraper`.
+2. Implemente `async search(query, imdb_id, type) -> list[TorrentResult]`.
+3. Registre o scraper no agregador.
+4. Teste falhas, timeouts e resultados duplicados antes de enviar um PR.
+
+## ⚖️ Uso responsável
+
+Tupi Stream é um projeto comunitário de software e não hospeda arquivos de mídia.
+
+Cada usuário é responsável por utilizar o software de acordo com a legislação aplicável e por acessar apenas conteúdo para o qual possua autorização ou direito de acesso.
+
+## 📄 Licença
 
 MIT
