@@ -1,10 +1,11 @@
 def get_manifest() -> dict:
-    """Retorna o manifest do addon no formato esperado pelo Stremio"""
+    """Retorna o manifest do addon no formato esperado pelo Stremio."""
     return {
+        # Mantido por compatibilidade com instalacoes existentes.
         "id": "community.br-streams",
         "version": "1.0.0",
-        "name": "BR Streams 🇧🇷",
-        "description": "Agregador de torrents PT-BR com Real-Debrid",
+        "name": "Tupi Stream 🇧🇷",
+        "description": "Agregador comunitário PT-BR para Stremio com suporte a P2P e Real-Debrid",
         "resources": ["stream"],
         "types": ["movie", "series"],
         "idPrefixes": ["tt"],
