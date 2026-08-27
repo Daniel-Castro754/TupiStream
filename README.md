@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/tupistream-logo.jpg" alt="Tupi Stream" width="640">
+</p>
+
 # Tupi Stream 🇧🇷
 
 > Seu agregador comunitário PT-BR para Stremio.
