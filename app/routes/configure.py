@@ -69,6 +69,18 @@ SOURCE_TYPE_BY_FLAG = {
     "ENABLE_RUTRACKER": "HTML / fórum",
 }
 
+# Fontes instaveis ficam disponiveis para escolha, mas nao consomem recursos
+# nem entram na URL instalada ate o usuario marca-las explicitamente.
+OPTIONAL_SOURCE_FLAGS = frozenset(
+    {
+        "ENABLE_HDR_TORRENT",
+        "ENABLE_MICOLEAO",
+        "ENABLE_TORRENT_GALAXY",
+        "ENABLE_1337X",
+        "ENABLE_RUTRACKER",
+    }
+)
+
 
 def _get_scraper_entries() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Separa scrapers ativos e desativados com base no registry real."""
@@ -87,6 +99,7 @@ def _get_scraper_entries() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
             "stability": STABILITY_LABELS.get(stability, stability.replace("_", " ").title()),
             "type": SOURCE_TYPE_BY_FLAG.get(flag_name, "Fonte externa"),
             "enabled": "true" if getattr(settings, flag_name, False) else "false",
+            "default_selected": "false" if flag_name in OPTIONAL_SOURCE_FLAGS else "true",
         }
         if entry["enabled"] == "true":
             enabled_entries.append(entry)
@@ -102,7 +115,7 @@ def _render_source_picker(entries: list[dict[str, str]]) -> str:
     for entry in entries:
         available = entry["enabled"] == "true"
         disabled = "" if available else " disabled"
-        checked = " checked" if available else ""
+        checked = " checked" if available and entry["default_selected"] == "true" else ""
         card_class = "" if available else " is-unavailable"
         badge_class = "badge-on" if available else "badge-off"
         badge = "Disponivel" if available else "Indisponivel nesta instancia"
@@ -165,21 +178,21 @@ CONFIG_HTML_TEMPLATE = """\
     min-height: 100vh;
     display: flex;
     justify-content: center;
-    padding: 1.25rem 0.75rem;
+    padding: 0.9rem 0.6rem;
   }
 
   .container {
     width: 100%;
-    max-width: 560px;
+    max-width: 500px;
   }
 
   .header {
     text-align: center;
-    margin-bottom: 1.25rem;
+    margin-bottom: 0.9rem;
   }
 
   .header h1 {
-    font-size: 1.75rem;
+    font-size: 1.55rem;
     font-weight: 800;
     color: #fff;
     margin-bottom: 0.4rem;
@@ -187,18 +200,18 @@ CONFIG_HTML_TEMPLATE = """\
 
   .header p {
     color: #888;
-    font-size: 0.95rem;
+    font-size: 0.85rem;
   }
 
   .card {
     background: #1a1a1a;
     border: 1px solid #2a2a2a;
     border-radius: 12px;
-    padding: 1rem;
-    margin-bottom: 0.85rem;
+    padding: 0.85rem;
+    margin-bottom: 0.7rem;
   }
 
-  .form-group { margin-bottom: 0.9rem; }
+  .form-group { margin-bottom: 0.75rem; }
 
   .form-group label {
     display: block;
@@ -211,12 +224,12 @@ CONFIG_HTML_TEMPLATE = """\
   .form-group input[type="text"],
   .form-group input[type="password"] {
     width: 100%;
-    padding: 0.75rem 1rem;
+    padding: 0.65rem 0.8rem;
     background: #111;
     border: 1px solid #333;
     border-radius: 8px;
     color: #fff;
-    font-size: 0.95rem;
+    font-size: 0.88rem;
     outline: none;
     transition: border-color 0.2s;
   }
@@ -245,8 +258,8 @@ CONFIG_HTML_TEMPLATE = """\
   }
 
   .mode-option {
-    margin-bottom: 0.9rem;
-    padding: 0.8rem;
+    margin-bottom: 0.75rem;
+    padding: 0.7rem;
     background: #111;
     border: 1px solid #303030;
     border-radius: 8px;
@@ -290,10 +303,10 @@ CONFIG_HTML_TEMPLATE = """\
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0.7rem 1.25rem;
+    padding: 0.62rem 1rem;
     border: none;
     border-radius: 8px;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     font-weight: 600;
     cursor: pointer;
     transition: transform 0.15s, opacity 0.2s;
@@ -485,8 +498,8 @@ CONFIG_HTML_TEMPLATE = """\
 
   .footer {
     text-align: center;
-    margin-top: 2rem;
-    padding-top: 1rem;
+    margin-top: 1.25rem;
+    padding-top: 0.75rem;
     border-top: 1px solid #1a1a1a;
   }
 
@@ -500,7 +513,7 @@ CONFIG_HTML_TEMPLATE = """\
   .footer a:hover { color: #00b4d8; }
 
   @media (max-width: 480px) {
-    .header h1 { font-size: 1.6rem; }
+    .header h1 { font-size: 1.45rem; }
     .btn-group { flex-direction: column; }
     .btn-group .btn { min-width: 100%; }
     .source-head { align-items: flex-start; flex-direction: column; }
