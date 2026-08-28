@@ -215,16 +215,33 @@ class TestConfigureSourcePicker:
         hdr_start = html.index('data-source-card="hdr"')
         hdr_card = html[hdr_start : hdr_start + 900]
         assert "Disponivel" in hdr_card
-        assert " checked" in hdr_card
         assert " disabled" not in hdr_card
 
-    def test_fontes_disponiveis_vem_marcadas_por_padrao(self):
+    @pytest.mark.parametrize(
+        "source_id", ["hdr", "micoleao", "torrentgalaxy", "1337x", "rutracker"]
+    )
+    def test_fontes_instaveis_ficam_desmarcadas_por_padrao(self, source_id):
         html = _build_config_html()
-        yts_start = html.index('data-source-card="yts"')
-        yts_card = html[yts_start : yts_start + 900]
-        assert "Disponivel" in yts_card
-        assert " checked" in yts_card
-        assert " disabled" not in yts_card
+        source_start = html.index(f'data-source-card="{source_id}"')
+        source_card = html[source_start : html.index("</label>", source_start)]
+        assert "Disponivel" in source_card
+        assert " checked" not in source_card
+        assert " disabled" not in source_card
+
+    @pytest.mark.parametrize(
+        "source_id", ["apache", "comando", "brazuca", "yts", "archive"]
+    )
+    def test_fontes_principais_vem_marcadas_por_padrao(self, source_id):
+        html = _build_config_html()
+        source_start = html.index(f'data-source-card="{source_id}"')
+        source_card = html[source_start : html.index("</label>", source_start)]
+        assert "Disponivel" in source_card
+        assert " checked" in source_card
+        assert " disabled" not in source_card
+
+    def test_interface_usa_largura_compacta(self):
+        html = _build_config_html()
+        assert "max-width: 500px" in html
 
     def test_url_gerada_transporta_fontes_sem_estado_global(self):
         html = _build_config_html()
