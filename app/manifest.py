@@ -3,7 +3,7 @@ def get_manifest() -> dict:
     return {
         # Mantido por compatibilidade com instalacoes existentes.
         "id": "community.br-streams",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "name": "Tupi Stream 🇧🇷",
         "description": "Agregador comunitário PT-BR para Stremio com suporte a P2P e Real-Debrid",
         "resources": ["stream"],

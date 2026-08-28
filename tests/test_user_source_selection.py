@@ -210,12 +210,13 @@ class TestConfigureSourcePicker:
         ):
             assert f'data-source-id="{source_id}"' in html
 
-    def test_fontes_globais_desligadas_ficam_indisponiveis(self):
+    def test_todas_as_fontes_ficam_disponiveis_por_padrao(self):
         html = _build_config_html()
         hdr_start = html.index('data-source-card="hdr"')
         hdr_card = html[hdr_start : hdr_start + 900]
-        assert "Indisponivel nesta instancia" in hdr_card
-        assert " disabled" in hdr_card
+        assert "Disponivel" in hdr_card
+        assert " checked" in hdr_card
+        assert " disabled" not in hdr_card
 
     def test_fontes_disponiveis_vem_marcadas_por_padrao(self):
         html = _build_config_html()
@@ -254,6 +255,5 @@ class TestConfigureSourcePicker:
         html = _build_config_html()
         assert "Fontes que desejo utilizar" in html
         assert "Ainda nao verificada" in html
-        assert "Desabilitada pelo administrador" in html
         assert "healthLabels" in html
         assert "cooldown" in html

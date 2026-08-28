@@ -2,7 +2,7 @@ import re
 
 from app.models.torrent import TorrentResult
 
-ADDON_LABEL = "BR Streams"
+ADDON_LABEL = "Tupi Stream"
 UNKNOWN_QUALITY = "DESCONHECIDA"
 
 
@@ -174,9 +174,9 @@ def build_stream_name(
     Monta um name curto e escaneavel.
 
     Exemplos:
-      - BR Streams • 4K
-      - BR Streams • 4K DV HDR • RD
-      - BR Streams • 1080p Dual
+      - Tupi Stream • 4K
+      - Tupi Stream • 4K DV HDR • RD
+      - Tupi Stream • 1080p Dual
     """
     title_upper = torrent.title.upper()
     quality_label = _display_quality_label(torrent)

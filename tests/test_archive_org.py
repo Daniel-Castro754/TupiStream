@@ -92,7 +92,7 @@ class TestArchiveOrgScraper:
             }
         }
         with (
-            patch.object(scraper, "_get", AsyncMock(return_value=search_response)),
+            patch.object(scraper, "_get", AsyncMock(return_value=search_response)) as search_get,
             patch.object(
                 scraper, "_get_bytes_limited", AsyncMock(return_value=torrent_bytes)
             ) as limited_get,
@@ -102,6 +102,9 @@ class TestArchiveOrgScraper:
             )
 
         limited_get.assert_awaited_once()
+        search_url = search_get.await_args.args[0]
+        assert "licenseurl" in search_url
+        assert "year%3A%5B%2A%20TO%201930%5D" in search_url
 
         assert len(resultados) == 1
         torrent = resultados[0]
@@ -133,6 +136,28 @@ class TestArchiveOrgScraper:
         assert resultados == []
         # Só chamou a busca — não tentou baixar torrent de um item irrelevante.
         assert get_mock.await_count == 1
+        await scraper.close()
+
+    @pytest.mark.asyncio
+    async def test_titulo_apenas_parcial_e_descartado(self):
+        """Evita que Matrix aceite Matrix Reloaded ou vídeos sobre a franquia."""
+        scraper = ArchiveOrgScraper()
+        search_response = MagicMock()
+        search_response.json.return_value = {
+            "response": {
+                "docs": [
+                    {"identifier": "matrix_reloaded", "title": "Matrix Reloaded"},
+                    {"identifier": "making_the_matrix", "title": "Making The Matrix"},
+                ]
+            }
+        }
+
+        with patch.object(scraper, "_get", AsyncMock(return_value=search_response)):
+            with patch.object(scraper, "_extrair_torrent", AsyncMock()) as extrair:
+                resultados = await scraper.search("Matrix", "tt0133093", "movie")
+
+        assert resultados == []
+        extrair.assert_not_awaited()
         await scraper.close()
 
     @pytest.mark.asyncio

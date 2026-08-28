@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -103,6 +104,22 @@ class TestParsearStream:
 
 
 class TestSearchIntegracao:
+    @pytest.mark.asyncio
+    async def test_timeout_da_origem_falha_rapido(self, monkeypatch):
+        s = BrazucaAddonScraper()
+
+        async def origem_travada(*args, **kwargs):
+            await asyncio.sleep(0.1)
+
+        monkeypatch.setattr("app.scrapers.brazuca_addon.settings.SCRAPER_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(s, "_get", origem_travada)
+
+        resultados = await s.search("Matrix", "tt0133093", "movie")
+
+        assert resultados == []
+        assert "timeout" in (s.last_error or "")
+        await s.close()
+
     @pytest.mark.asyncio
     async def test_search_filtra_streams_invalidos_e_mantem_validos(self):
         s = BrazucaAddonScraper()

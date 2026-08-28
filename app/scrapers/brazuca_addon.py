@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -40,7 +41,18 @@ class BrazucaAddonScraper(BaseScraper):
 
         # Consome a API do addon Stremio diretamente (não faz web scraping)
         url = f"{self.base_url}/stream/{type}/{stremio_id}.json"
-        response = await self._get(url)
+        # A origem é apenas um proxy JSON. Repetir uma chamada travada consome
+        # quase todo o budget do Stremio sem aumentar a chance de resultado.
+        # Falha em até 4s e deixa as demais fontes concluírem normalmente.
+        try:
+            response = await asyncio.wait_for(
+                self._get(url, retries=0),
+                timeout=min(4.0, settings.SCRAPER_TIMEOUT_SECONDS),
+            )
+        except TimeoutError:
+            self.last_error = "timeout do addon de origem após 4s"
+            logger.warning(f"[{self.name}] {self.last_error}")
+            return resultados
         if not response:
             return resultados
 

@@ -73,18 +73,19 @@ class Settings(BaseSettings):
     ENABLE_YTS: bool = True
     ENABLE_ARCHIVE_ORG: bool = True
 
-    # Domínios sem resolução confiável em julho/2026. Permanecem disponíveis
-    # por feature flag, mas não atrasam todas as buscas por padrão.
-    ENABLE_HDR_TORRENT: bool = False
-    ENABLE_MICOLEAO: bool = False
+    # Todas as fontes ficam disponíveis na instalação padrão. As fontes
+    # instáveis continuam protegidas pelo circuit breaker do agregador.
+    ENABLE_HDR_TORRENT: bool = True
+    ENABLE_MICOLEAO: bool = True
 
     # ── API Keys opcionais ──
     TMDB_API_KEY: str = ""  # opcional — se vazio, usa alternativas gratuitas
 
-    # Fontes instáveis / bloqueadas por anti-bot (desativadas por padrão)
-    ENABLE_TORRENT_GALAXY: bool = False
-    ENABLE_1337X: bool = False
-    ENABLE_RUTRACKER: bool = False
+    # Fontes instáveis / sujeitas a anti-bot. Ativas para poderem se recuperar
+    # quando um domínio/mirror voltar, sem exigir um novo deploy.
+    ENABLE_TORRENT_GALAXY: bool = True
+    ENABLE_1337X: bool = True
+    ENABLE_RUTRACKER: bool = True
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

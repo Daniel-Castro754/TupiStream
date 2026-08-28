@@ -6,7 +6,7 @@ from app.models.config import settings
 from app.models.torrent import TorrentResult
 from app.scrapers.base import BaseScraper
 from app.scrapers.bencode import parse_torrent
-from app.scrapers.relevance import is_relevant_release
+from app.scrapers.relevance import normalize_release_title
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +62,17 @@ class ArchiveOrgScraper(BaseScraper):
         if type != "movie":
             return resultados
 
-        search_query = f'title:("{query}") AND mediatype:(movies)'
+        # O Archive não é uma fonte adequada para lançamentos comerciais.
+        # Restringimos a busca a obras antigas ou explicitamente licenciadas,
+        # em vez de devolver qualquer upload cujo título contenha a consulta.
+        search_query = (
+            f'title:("{query}") AND mediatype:(movies) AND '
+            '(year:[* TO 1930] OR licenseurl:(creativecommons.org*))'
+        )
         search_url = (
             f"{self.base_url}/advancedsearch.php"
             f"?q={quote(search_query)}"
-            "&fl[]=identifier&fl[]=title"
+            "&fl[]=identifier&fl[]=title&fl[]=year&fl[]=licenseurl"
             f"&rows={self.MAX_CANDIDATES}&page=1&output=json"
         )
         response = await self._get(search_url)
@@ -87,7 +93,11 @@ class ArchiveOrgScraper(BaseScraper):
             titulo = str(doc.get("title") or identifier or "").strip()
             if not identifier or not titulo:
                 continue
-            if not is_relevant_release(query, titulo):
+            # Na API do Archive, uma consulta curta como "Matrix" também
+            # retorna dezenas de obras apenas relacionadas à palavra. Aqui
+            # exigimos o título normalizado exato; tags de release continuam
+            # sendo removidas pelo normalizador compartilhado.
+            if normalize_release_title(query) != normalize_release_title(titulo):
                 rejeitados += 1
                 continue
             candidatos.append((identifier, titulo))

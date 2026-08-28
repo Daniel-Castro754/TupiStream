@@ -1,5 +1,5 @@
 """
-Testes automatizados do fluxo crítico — BR Streams.
+Testes automatizados do fluxo crítico — Tupi Stream.
 
 Cobre:
   1. _formatar_stream: exclusão mútua url/infoHash
@@ -136,7 +136,7 @@ class TestFormatarStream:
             has_play_url=True,
             stream_url="http://localhost/play/4k"
         )
-        assert result.name == "BR Streams • 4K DV HDR • RD"
+        assert result.name == "Tupi Stream • 4K DV HDR • RD"
         assert result.title == (
             "Filme.Exemplo.2024.2160p.WEB-DL.DV.HDR.HEVC.Atmos.Dublado\n"
             "👥 120 • Dublado / PT-BR • 15.2 GB • HDR Torrent • RD\n"
@@ -157,7 +157,7 @@ class TestFormatarStream:
             has_play_url=False,
             stream_url=None
         )
-        assert result.name == "BR Streams • 1080p Dual"
+        assert result.name == "Tupi Stream • 1080p Dual"
         assert result.title == (
             "Filme.Exemplo.2024.1080p.WEB-DL.DUAL.AUDIO.PT-BR.ENG.x264\n"
             "👥 84 • Dual Audio / PT-BR • 2.1 GB • Apache Torrent\n"
@@ -178,7 +178,7 @@ class TestFormatarStream:
             has_play_url=True,
             stream_url="http://localhost/play/serie"
         )
-        assert result.name == "BR Streams • 720p • RD"
+        assert result.name == "Tupi Stream • 720p • RD"
         assert result.title == (
             "Serie.Exemplo.S01E02.720p.WEBRip.ENG.x264\n"
             "👥 12 • Áudio: ENG • 1.4 GB • Comando Filmes • RD\n"
@@ -898,7 +898,7 @@ class TestPlayUrlOrigin:
             async def fake_get_streams(**kwargs):
                 captured_kwargs.update(kwargs)
                 return [StreamResult(
-                    name="BR Streams • 1080p • RD",
+                    name="Tupi Stream • 1080p • RD",
                     title="Teste",
                     url=f"{kwargs.get('request_base_url', 'http://localhost:8000')}/play/test-id",
                     behaviorHints={},
@@ -930,7 +930,7 @@ class TestPlayUrlOrigin:
         async def fake_get_streams(**kwargs):
             captured_kwargs.update(kwargs)
             return [StreamResult(
-                name="BR Streams • 1080p • RD",
+                name="Tupi Stream • 1080p • RD",
                 title="Teste",
                 url=f"{kwargs.get('request_base_url', 'http://localhost:8000')}/play/test-id",
                 behaviorHints={},

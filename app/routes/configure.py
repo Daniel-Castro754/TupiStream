@@ -154,7 +154,7 @@ CONFIG_HTML_TEMPLATE = """\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BR Streams - Configuracao</title>
+<title>Tupi Stream - Configuração</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -165,21 +165,21 @@ CONFIG_HTML_TEMPLATE = """\
     min-height: 100vh;
     display: flex;
     justify-content: center;
-    padding: 2rem 1rem;
+    padding: 1.25rem 0.75rem;
   }
 
   .container {
     width: 100%;
-    max-width: 680px;
+    max-width: 560px;
   }
 
   .header {
     text-align: center;
-    margin-bottom: 2rem;
+    margin-bottom: 1.25rem;
   }
 
   .header h1 {
-    font-size: 2.2rem;
+    font-size: 1.75rem;
     font-weight: 800;
     color: #fff;
     margin-bottom: 0.4rem;
@@ -194,11 +194,11 @@ CONFIG_HTML_TEMPLATE = """\
     background: #1a1a1a;
     border: 1px solid #2a2a2a;
     border-radius: 12px;
-    padding: 1.5rem;
-    margin-bottom: 1.25rem;
+    padding: 1rem;
+    margin-bottom: 0.85rem;
   }
 
-  .form-group { margin-bottom: 1.25rem; }
+  .form-group { margin-bottom: 0.9rem; }
 
   .form-group label {
     display: block;
@@ -245,8 +245,8 @@ CONFIG_HTML_TEMPLATE = """\
   }
 
   .mode-option {
-    margin-bottom: 1.25rem;
-    padding: 1rem;
+    margin-bottom: 0.9rem;
+    padding: 0.8rem;
     background: #111;
     border: 1px solid #303030;
     border-radius: 8px;
@@ -399,7 +399,7 @@ CONFIG_HTML_TEMPLATE = """\
     display: flex;
     align-items: flex-start;
     gap: 0.75rem;
-    padding: 0.8rem 0;
+    padding: 0.6rem 0;
     border-bottom: 1px solid #222;
     cursor: pointer;
   }
@@ -417,7 +417,7 @@ CONFIG_HTML_TEMPLATE = """\
   .source-item:last-child { border-bottom: none; }
 
   .source-emoji {
-    font-size: 1.4rem;
+    font-size: 1.15rem;
     width: 2rem;
     text-align: center;
     flex-shrink: 0;
@@ -435,12 +435,12 @@ CONFIG_HTML_TEMPLATE = """\
 
   .source-name {
     font-weight: 600;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     color: #e0e0e0;
   }
 
   .source-desc {
-    font-size: 0.84rem;
+    font-size: 0.78rem;
     color: #b0b0b0;
     line-height: 1.45;
   }
@@ -511,7 +511,7 @@ CONFIG_HTML_TEMPLATE = """\
 
 <div class="container">
   <div class="header">
-    <h1>BR Streams &#x1F1E7;&#x1F1F7;</h1>
+    <h1>Tupi Stream &#x1F1E7;&#x1F1F7;</h1>
     <p>P2P gratuito com Real-Debrid opcional</p>
   </div>
 
@@ -576,7 +576,7 @@ __SCRAPER_SECTIONS__
   </div>
 
   <div class="footer">
-    <a href="#" target="_blank" rel="noopener">GitHub &middot; BR Streams</a>
+    <a href="https://github.com/Daniel-Castro754/TupiStream" target="_blank" rel="noopener">GitHub &middot; Tupi Stream</a>
   </div>
 </div>
 

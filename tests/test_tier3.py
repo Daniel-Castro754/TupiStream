@@ -153,6 +153,11 @@ class TestParametroTitleMorto:
 
 
 class TestManifest:
+    def test_identidade_e_versao_atualizadas(self):
+        manifest = get_manifest()
+        assert manifest["name"] == "Tupi Stream 🇧🇷"
+        assert manifest["version"] == "1.1.0"
+
     def test_declara_configurable(self):
         """A pagina /configure existe; sem isto o Stremio nao mostra o botao."""
         assert get_manifest()["behaviorHints"]["configurable"] is True

@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
     await aggregator.restore_health_from_cache()
     janitor = asyncio.create_task(_limpeza_periodica_do_cache())
     logger.info("=" * 50)
-    logger.info("🇧🇷 BR Streams iniciado!")
+    logger.info("🇧🇷 Tupi Stream iniciado!")
     logger.info(f"📺 Configuração: {settings.BASE_URL}/configure")
     logger.info(f"📋 Manifest: {settings.BASE_URL}/manifest.json")
     logger.info(f"💾 Storage backend: {settings.STORAGE_BACKEND}")
@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
 
 
 # Cria a aplicação FastAPI
-app = FastAPI(title="BR Streams 🇧🇷", lifespan=lifespan)
+app = FastAPI(title="Tupi Stream 🇧🇷", lifespan=lifespan)
 
 # CORS liberado para todas as origens (necessário para Stremio web)
 app.add_middleware(
