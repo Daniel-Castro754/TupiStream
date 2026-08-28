@@ -69,6 +69,10 @@ class TestPaginaDeConfiguracao:
         campo = CONFIG_HTML_TEMPLATE[i - 60:i + 160]
         assert 'autocomplete="off"' in campo
 
+    def test_manifest_novo_nao_concatena_token_na_url(self):
+        assert "encodeURIComponent(token) + '/manifest.json'" not in CONFIG_HTML_TEMPLATE
+        assert "'/api/configurations'" in CONFIG_HTML_TEMPLATE
+
 
 class TestReadmeNaoMenteMais:
     def test_nao_afirma_mais_que_o_servidor_nao_guarda_token(self):
@@ -88,10 +92,11 @@ class TestReadmeNaoMenteMais:
             "o servidor guarda o token nas play sessions por ate 30 minutos"
         )
 
-    def test_diz_onde_o_token_fica(self):
+    def test_documenta_novo_fluxo_e_compatibilidade(self):
         import pathlib
 
         readme = pathlib.Path(__file__).resolve().parents[1] / "README.md"
         texto = readme.read_text(encoding="utf-8")
-        assert "caminho da URL" in texto
-        assert "30 minutos" in texto
+        assert "/config/{id}/manifest.json" in texto
+        assert "payload criptografado" in texto
+        assert "rotas antigas com token no caminho" in texto

@@ -24,7 +24,7 @@ run:
 	python -m app.main
 
 docker-build:
-	docker build -t br-stremio-addon .
+	docker build -t tupistream .
 
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

@@ -57,17 +57,28 @@ Com um token configurado, o addon consulta o serviço e prioriza opções dispon
 
 ## 🔐 Segurança do token Real-Debrid
 
-A implementação atual ainda possui uma limitação importante:
+Novas instalações não colocam mais o token no caminho do manifest:
 
-- o token faz parte do caminho da URL do manifest;
-- URLs podem aparecer em histórico do navegador e logs de infraestrutura;
-- sessões temporárias de playback podem manter o token no cache SQLite por até aproximadamente 30 minutos.
+- o navegador envia o token uma única vez por `POST /api/configurations`;
+- o servidor grava somente um payload criptografado;
+- a URL instalada usa `/config/{id}/manifest.json`, com um ID aleatório;
+- sessões `/play` guardam o ID da configuração, não o token;
+- o payload expira conforme `CONFIG_TTL_SECONDS` (um ano por padrão).
 
-**Nunca compartilhe sua URL pessoal de manifest.** Compartilhe apenas a página `/configure`.
+Em cloud, defina `CONFIG_ENCRYPTION_KEY` com uma chave Fernet. Em instalação
+local, se essa variável ficar vazia, o servidor cria `data/config.key`; por
+isso o diretório `data/` precisa ser persistente. Perder ou trocar a chave
+invalida as configurações já instaladas.
+
+As rotas antigas com token no caminho continuam disponíveis somente para
+compatibilidade. Reinstale o addon pela página `/configure` para migrar.
+
+**Não compartilhe sua URL pessoal de manifest.** Ela não revela o token, mas
+o ID funciona como autorização para usar aquela configuração. Compartilhe
+apenas a página `/configure`.
 
 Caso seu token tenha sido exposto, gere um novo token diretamente no Real-Debrid.
 
-Melhorar esse fluxo de autenticação é uma prioridade técnica do projeto.
 
 ## 🛠️ Rodando localmente
 

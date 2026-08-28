@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     STORAGE_BACKEND: str = "sqlite"          # "sqlite" | "redis"
     REDIS_URL: str = "redis://localhost:6379"
 
+    # ── Configurações privadas ──
+    # Credenciais nunca entram na URL. O servidor guarda um payload Fernet
+    # cifrado e expõe apenas um identificador aleatório no manifest.
+    CONFIG_TTL_SECONDS: int = 365 * 24 * 3600
+    CONFIG_ENCRYPTION_KEY: str = ""
+    CONFIG_ENCRYPTION_KEY_FILE: str = "data/config.key"
+
     # ── Request — budget total ──
     # Tempo máximo que get_streams() pode gastar antes de retornar resultados parciais.
     # O Stremio corta em ~20s — este budget garante resposta antes disso.

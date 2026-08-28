@@ -522,7 +522,8 @@ CONFIG_HTML_TEMPLATE = """\
       <a href="https://real-debrid.com/apitoken" target="_blank" rel="noopener" class="hint">Onde encontro meu token? &rarr;</a>
       <p class="security-note">
         O token e opcional. Sem token, o addon usa P2P. Com token, o modo padrao
-        usa Real-Debrid. Nunca compartilhe uma URL que contenha seu token.
+        usa Real-Debrid. O token e enviado uma vez e armazenado criptografado;
+        a URL instalada contem apenas um identificador aleatorio.
       </p>
     </div>
 
@@ -569,8 +570,8 @@ __SCRAPER_SECTIONS__
         </div>
       </div>
       <p style="color:#ff6b6b;font-size:0.82rem;line-height:1.5;">
-        &#x26A0; Nunca compartilhe sua URL de manifest — ela contem seu token RD
-        e permite streaming na sua conta.
+        &#x26A0; Nao compartilhe sua URL de manifest: embora ela nao contenha o
+        token, o identificador permite usar a configuracao da sua conta.
       </p>
     </div>
   </div>
@@ -593,7 +594,8 @@ __SCRAPER_SECTIONS__
   var toast = document.getElementById('toast');
   var manifestUrl = '';
 
-  document.getElementById('btn-generate').addEventListener('click', function() {
+  var generateButton = document.getElementById('btn-generate');
+  generateButton.addEventListener('click', async function() {
     var token = tokenInput.value.trim();
     var baseUrl = window.location.origin;
     var selectedSources = sourceInputs.filter(function(input) {
@@ -605,13 +607,36 @@ __SCRAPER_SECTIONS__
       return;
     }
 
-    var sourcePrefix = '/sources/' + selectedSources.join(',');
-    if (token && includeP2PInput.checked) {
-      manifestUrl = baseUrl + sourcePrefix + '/hybrid/' + encodeURIComponent(token) + '/manifest.json';
-    } else if (token) {
-      manifestUrl = baseUrl + sourcePrefix + '/' + encodeURIComponent(token) + '/manifest.json';
-    } else {
+    if (!token) {
+      var sourcePrefix = '/sources/' + selectedSources.join(',');
       manifestUrl = baseUrl + sourcePrefix + '/manifest.json';
+    } else {
+      generateButton.disabled = true;
+      generateButton.textContent = 'Protegendo configuracao...';
+      try {
+        var response = await fetch('/api/configurations', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            rd_token: token,
+            include_p2p: includeP2PInput.checked,
+            source_ids: selectedSources
+          })
+        });
+        var data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Nao foi possivel salvar a configuracao');
+        }
+        manifestUrl = data.manifest_url;
+        tokenInput.value = '';
+        updateModeSummary();
+      } catch (error) {
+        showToast(error.message || 'Erro ao gerar configuracao');
+        return;
+      } finally {
+        generateButton.disabled = false;
+        generateButton.textContent = 'Gerar link de instalacao';
+      }
     }
 
     manifestInput.value = manifestUrl;

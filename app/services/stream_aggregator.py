@@ -655,6 +655,7 @@ class StreamAggregator:
         req_id: str,
         stremio_id: str | None = None,
         rd_token: str | None = None,
+        rd_config_id: str | None = None,
         include_p2p: bool = False,
         request_base_url: str | None = None,
         season: int | None = None,
@@ -743,7 +744,6 @@ class StreamAggregator:
             if rd_token and torrent.magnet:
                 play_id = str(uuid.uuid4())
                 session_data = {
-                    "rd_token": rd_token,
                     "magnet": torrent.magnet,
                     "info_hash": torrent.info_hash,
                     "imdb_id": imdb_id,
@@ -753,6 +753,12 @@ class StreamAggregator:
                     "created_at": time.time(),
                     "play_session_ttl": PLAY_SESSION_TTL_SECONDS,
                 }
+                if rd_config_id:
+                    session_data["rd_config_id"] = rd_config_id
+                else:
+                    # Compatibilidade com instalações antigas cujo próprio
+                    # token ainda está no caminho do manifest.
+                    session_data["rd_token"] = rd_token
                 try:
                     await cache.set(
                         f"play:{play_id}",

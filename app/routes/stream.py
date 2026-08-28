@@ -12,6 +12,11 @@ from fastapi.responses import RedirectResponse
 from app.models.config import settings
 from app.scrapers.base import set_req_id
 from app.services.cache import CacheWriteError, cache
+from app.services.configuration_store import (
+    ConfigurationCorruptError,
+    ConfigurationNotFoundError,
+    configuration_store,
+)
 from app.services.real_debrid import (
     EstadoPlayback,
     RealDebridPlaybackNotReadyError,
@@ -232,6 +237,7 @@ async def _get_selected_streams(
     *,
     source_ids: str,
     rd_token: str | None,
+    rd_config_id: str | None = None,
     content_type: ContentType,
     stremio_id: str,
     request: Request,
@@ -254,6 +260,7 @@ async def _get_selected_streams(
         type=content_type,
         req_id=req_id,
         rd_token=token,
+        rd_config_id=rd_config_id,
         include_p2p=include_p2p,
         request_base_url=_request_base_url(request),
         season=season,
@@ -516,6 +523,21 @@ async def _resolver_play(play_id: str, request: Request):
         return RedirectResponse(url=cached_url, status_code=302)
 
     rd_token = session_data.get("rd_token")
+    rd_config_id = session_data.get("rd_config_id")
+    if rd_config_id and not rd_token:
+        try:
+            private = await configuration_store.get(rd_config_id)
+            rd_token = private.rd_token
+        except ConfigurationNotFoundError as exc:
+            raise HTTPException(
+                status_code=410,
+                detail="Configuração de reprodução expirada. Gere uma nova instalação.",
+            ) from exc
+        except ConfigurationCorruptError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Configuração privada inválida. Gere uma nova instalação.",
+            ) from exc
     magnet = session_data.get("magnet")
     type_ = session_data.get("type", "movie")
     stremio_id = session_data.get("stremio_id", "")

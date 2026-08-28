@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: br-stremio-addon
+    name: tupistream
     runtime: docker
     plan: free
     envVars:

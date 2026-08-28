@@ -113,5 +113,6 @@ def test_pagina_configuracao_oferece_modo_hibrido():
     html = _build_config_html()
 
     assert 'id="include-p2p"' in html
-    assert "/hybrid/" in html
+    assert "include_p2p: includeP2PInput.checked" in html
+    assert "'/api/configurations'" in html
     assert "Sem token: o link sera gerado no modo P2P." in html

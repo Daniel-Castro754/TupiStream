@@ -10,6 +10,7 @@ from fastapi.responses import RedirectResponse
 
 from app.manifest import get_manifest
 from app.models.config import settings
+from app.routes.configurations import router as configurations_router
 from app.routes.configure import router as configure_router
 from app.routes.stream import (
     SourceIdsPath,
@@ -93,12 +94,13 @@ app = FastAPI(title="Tupi Stream 🇧🇷", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 # Inclui as rotas
 app.include_router(configure_router)
+app.include_router(configurations_router)
 app.include_router(stream_router)
 
 

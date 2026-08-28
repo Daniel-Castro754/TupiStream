@@ -1,10 +1,11 @@
-# BR Streams - Operacao Atual
+# Tupi Stream - Operacao Atual
 
 ## Fluxo real
 
 ### `/stream`
 - Agrega resultados dos scrapers ativos.
-- Quando existe `rd_token` e o torrent tem `magnet`, cria uma play session em `play:{id}`.
+- Quando existe uma configuração RD e o torrent tem `magnet`, cria uma play session em `play:{id}`.
+- Em instalações novas, a session guarda `rd_config_id`; o token permanece somente no registro criptografado.
 - O stream retornado usa `url=/play/{id}`.
 - Quando nao existe `rd_token` ou nao existe `magnet`, o addon retorna fallback torrent com `infoHash`.
 
@@ -67,5 +68,6 @@
 - Play sessions expiram por TTL apos 30 min, independente de uso.
 - Se o cliente reutilizar um stream gerado ha mais de 30 min, a sessao tera expirado e sera necessario gerar novo stream.
 - Em deploys com filesystem efemero (ex: container sem volume montado em `data/`), o arquivo `.db` pode ser perdido no redeploy — nesse caso as sessions nao sobrevivem.
-- O token do Real-Debrid ainda faz parte do fluxo atual do addon e continua sendo usado na play session.
-- O token no path do manifest/stream continua sendo uma limitacao aberta por compatibilidade.
+- Configurações novas usam `/config/{id}` e não gravam o token nas play sessions.
+- Rotas antigas ainda aceitam token no path por compatibilidade e devem ser consideradas legadas.
+- Trocar/perder `CONFIG_ENCRYPTION_KEY` ou `data/config.key` invalida configurações existentes.

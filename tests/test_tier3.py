@@ -13,13 +13,13 @@ Correções pequenas, cada uma um bug de lógica que a suíte não cobria.
 """
 
 import inspect
+from unittest.mock import patch
 
 import pytest
 
 from app.manifest import get_manifest
 from app.models.torrent import TorrentResult
 from app.services.stream_aggregator import StreamAggregator, _binge_group
-from unittest.mock import patch
 
 
 def _aggregator() -> StreamAggregator:
@@ -156,7 +156,7 @@ class TestManifest:
     def test_identidade_e_versao_atualizadas(self):
         manifest = get_manifest()
         assert manifest["name"] == "Tupi Stream 🇧🇷"
-        assert manifest["version"] == "1.1.0"
+        assert manifest["version"] == "1.2.0"
 
     def test_declara_configurable(self):
         """A pagina /configure existe; sem isto o Stremio nao mostra o botao."""
